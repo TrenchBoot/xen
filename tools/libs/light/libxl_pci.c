@@ -226,7 +226,7 @@ out:
 static int libxl__device_pci_remove_xenstore(libxl__gc *gc, uint32_t domid, libxl_device_pci *pci)
 {
     libxl_ctx *ctx = libxl__gc_owner(gc);
-    char *be_path, *num_devs_path, *num_devs, *xsdev, *tmp, *tmppath;
+    char *be_path, *num_devs_path, *num_devs, *xsdev, *tmp, *tmppath, *state_before;
     int num, i, j;
     xs_transaction_t t;
 
@@ -237,12 +237,13 @@ static int libxl__device_pci_remove_xenstore(libxl__gc *gc, uint32_t domid, libx
     if (!num_devs)
         return ERROR_INVAL;
     num = atoi(num_devs);
+    state_before = libxl__xs_read(gc, XBT_NULL, libxl__sprintf(gc, "%s/state", be_path));
 
     libxl_domain_type domtype = libxl__domain_type(gc, domid);
     if (domtype == LIBXL_DOMAIN_TYPE_INVALID)
         return ERROR_FAIL;
 
-    if (domtype == LIBXL_DOMAIN_TYPE_PV) {
+    if (domtype == LIBXL_DOMAIN_TYPE_PV && state_before && atoi(state_before) != 6) {
         if (libxl__wait_for_backend(gc, be_path, GCSPRINTF("%d", XenbusStateConnected)) < 0) {
             LOGD(DEBUG, domid, "pci backend at %s is not ready", be_path);
             return ERROR_FAIL;
@@ -264,6 +265,8 @@ static int libxl__device_pci_remove_xenstore(libxl__gc *gc, uint32_t domid, libx
     }
 
 retry_transaction:
+    if (state_before && atoi(state_before) == XenbusStateClosed)
+        goto retry_transaction2;
     t = xs_transaction_start(ctx->xsh);
     xs_write(ctx->xsh, t, GCSPRINTF("%s/state-%d", be_path, i), GCSPRINTF("%d", XenbusStateClosing), 1);
     xs_write(ctx->xsh, t, GCSPRINTF("%s/state", be_path), GCSPRINTF("%d", XenbusStateReconfiguring), 1);
