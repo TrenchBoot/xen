@@ -156,6 +156,7 @@ static SIMPLE_TEXT_OUTPUT_INTERFACE *__initdata StdErr;
 
 static UINT32 __initdata mdesc_ver;
 static bool __initdata map_bs;
+static bool __initdata map_res = true;
 
 static struct file __initdata cfg;
 static struct file __initdata kernel;
@@ -1719,6 +1720,11 @@ void __init efi_init_memory(void)
             case EfiBootServicesCode:
             case EfiBootServicesData:
                 if ( !map_bs )
+                    continue;
+                break;
+
+            case EfiReservedMemoryType:
+                if ( !map_res )
                     continue;
                 break;
             }
