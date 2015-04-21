@@ -2530,6 +2530,9 @@ static void spawn_stub_launch_dm(libxl__egc *egc,
         while (*(serial++))
             num_console++;
     }
+    else
+        /* Qubes hack */
+        num_console = 1;
 
     console = libxl__calloc(gc, num_console, sizeof(libxl__device_console));
 
