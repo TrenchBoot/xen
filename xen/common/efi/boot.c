@@ -1474,6 +1474,18 @@ efi_start(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         name.s = get_value(&cfg, section.s, "options");
         efi_arch_handle_cmdline(argc ? *argv : NULL, options, name.s);
 
+        name.s = get_value(&cfg, section.s, "mapbs");
+        if ( name.s )
+        {
+            map_bs = name.s[0] == '1';
+        }
+
+        name.s = get_value(&cfg, section.s, "noexitboot");
+        if ( name.s )
+        {
+            exit_boot_services = name.s[0] == '0';
+        }
+
         if ( !base_video )
         {
             name.cs = get_value(&cfg, section.s, "video");
