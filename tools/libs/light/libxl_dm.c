@@ -1463,18 +1463,20 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
                 LOGD(ERROR, guest_domid, "Both usbdevice and usbdevice_list set");
                 return ERROR_INVAL;
             }
-            flexarray_append(dm_args, "-usb");
+            flexarray_append_pair(dm_args,
+                                  "-device", "usb-ehci,id=ehci");
             if (b_info->u.hvm.usbdevice) {
-                flexarray_vappend(dm_args,
-                                  "-usbdevice", b_info->u.hvm.usbdevice, NULL);
+                flexarray_vappend(dm_args, "-device",
+                                  GCSPRINTF("usb-%s,bus=ehci.0",
+                                            b_info->u.hvm.usbdevice),
+                                  NULL);
             } else if (b_info->u.hvm.usbdevice_list) {
                 char **p;
                 for (p = b_info->u.hvm.usbdevice_list;
                      *p;
                      p++) {
-                    flexarray_vappend(dm_args,
-                                      "-usbdevice",
-                                      *p, NULL);
+                    flexarray_vappend(dm_args, "-device",
+                                      GCSPRINTF("usb-%s,bus=ehci.0", *p), NULL);
                 }
             }
         } else if (b_info->u.hvm.usbversion) {
