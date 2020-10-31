@@ -12,8 +12,9 @@ export XEN_FULLVERSION   = $(XEN_VERSION).$(XEN_SUBVERSION)$(XEN_EXTRAVERSION)
 
 export XEN_WHOAMI	?= $(USER)
 export XEN_DOMAIN	?= $(shell ([ -x /bin/dnsdomainname ] && /bin/dnsdomainname) || ([ -x /bin/domainname ] && /bin/domainname || echo [unknown]))
-export XEN_BUILD_DATE	?= $(shell LC_ALL=C date)
-export XEN_BUILD_TIME	?= $(shell LC_ALL=C date +%T)
+
+export XEN_BUILD_DATE	?= $(shell LC_ALL=C date $(DATE_EPOCH_OPTS))
+export XEN_BUILD_TIME	?= $(shell LC_ALL=C date $(DATE_EPOCH_OPTS) +%T)
 export XEN_BUILD_HOST	?= $(shell hostname)
 
 # Best effort attempt to find a python interpreter, defaulting to Python 3 if
