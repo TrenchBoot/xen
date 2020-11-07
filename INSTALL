@@ -240,6 +240,7 @@ XEN_BUILD_DATE=<output of date(1)>
 XEN_BUILD_TIME=hh:mm:ss
 SMBIOS_REL_DATE=mm/dd/yyyy
 VGABIOS_REL_DATE="dd Mon yyyy"
+PANDOC_REL_DATE="+%Y-%m-%d"
 
 It is sufficient to define only SOURCE_DATE_EPOCH instead of the above
 variables for having reproducible builds. By default, they use
