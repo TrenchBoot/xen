@@ -4851,6 +4851,8 @@ static inline const char *libxl__qemu_qmp_path(libxl__gc *gc, int domid)
     return GCSPRINTF("%s/qmp-libxl-%d", libxl__run_dir_path(), domid);
 }
 
+_hidden bool libxl__is_insecure_pv_passthrough_enabled(libxl__gc *gc);
+
 /* Send control commands over xenstore and wait for an Ack. */
 _hidden int libxl__domain_pvcontrol(libxl__egc *egc,
                                     libxl__xswait_state *pvcontrol,

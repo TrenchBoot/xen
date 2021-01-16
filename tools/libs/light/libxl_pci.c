@@ -1537,8 +1537,10 @@ out_no_irq:
         r = xc_assign_device(ctx->xch, domid, pci_encode_bdf(pci), flag);
         if (r < 0 && (hvm || errno != ENOSYS)) {
             LOGED(ERROR, domainid, "xc_assign_device failed");
-            rc = ERROR_FAIL;
-            goto out;
+            if (hvm || errno != EOPNOTSUPP || !libxl__is_insecure_pv_passthrough_enabled(gc)) {
+                rc = ERROR_FAIL;
+                goto out;
+            }
         }
     }
 
@@ -1587,6 +1589,41 @@ static int libxl__device_pci_reset(libxl__gc *gc, unsigned int domain, unsigned 
         LOGED(ERROR, domain, "Failed to access reset path %s", reset);
     }
     return -1;
+}
+
+bool libxl__is_insecure_pv_passthrough_enabled(libxl__gc *gc)
+{
+    FILE *f = fopen("/proc/cmdline", "r");
+    char cmdline[4096], *tok;
+    size_t read_s;
+    static int is_enabled = -1;
+
+    if (is_enabled != -1)
+        return is_enabled;
+
+    if (!f) {
+        LOG(WARN, "Failed to open /proc/cmdline: %d", errno);
+        return false;
+    }
+    read_s = fread(cmdline, 1, sizeof(cmdline) - 1, f);
+    if (!feof(f) || ferror(f)) {
+        LOG(WARN, "Failed to read /proc/cmdline: %d", errno);
+        fclose(f);
+        return false;
+    }
+    cmdline[read_s] = 0;
+    fclose(f);
+
+    tok = strtok(cmdline, " \n");
+    while (tok) {
+        if (strcmp(tok, "qubes.enable_insecure_pv_passthrough") == 0) {
+            is_enabled = 1;
+            return true;
+        }
+        tok = strtok(NULL, " \n");
+    }
+    is_enabled = 0;
+    return false;
 }
 
 int libxl__device_pci_setdefault(libxl__gc *gc, uint32_t domid,

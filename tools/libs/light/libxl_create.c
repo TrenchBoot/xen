@@ -1181,12 +1181,18 @@ int libxl__domain_config_setdefault(libxl__gc *gc,
      * This will be insufficient if and when ARM does PCI hotplug.
      */
     bool need_pt = d_config->num_pcidevs || d_config->num_dtdevs;
+    bool iommu_enabled = physinfo.cap_hvm_directio;
+    if (need_pt && !iommu_enabled &&
+            c_info->type == LIBXL_DOMAIN_TYPE_PV &&
+            libxl__is_insecure_pv_passthrough_enabled(gc)) {
+        /* allow insecure PV with IOMMU usage */
+        need_pt = false;
+    }
     if (c_info->passthrough == LIBXL_PASSTHROUGH_DEFAULT) {
         c_info->passthrough = need_pt
             ? LIBXL_PASSTHROUGH_ENABLED : LIBXL_PASSTHROUGH_DISABLED;
     }
 
-    bool iommu_enabled = physinfo.cap_hvm_directio;
     if (c_info->passthrough != LIBXL_PASSTHROUGH_DISABLED && !iommu_enabled) {
         LOGD(ERROR, domid,
              "passthrough not supported on this platform\n");
