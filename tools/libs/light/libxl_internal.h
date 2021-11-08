@@ -1527,6 +1527,7 @@ _hidden char *libxl__domain_device_backend_path(libxl__gc *gc, uint32_t backend_
 _hidden char *libxl__device_libxl_path(libxl__gc *gc, libxl__device *device);
 _hidden char *libxl__domain_device_libxl_path(libxl__gc *gc, uint32_t domid, uint32_t devid,
                                               libxl__device_kind device_kind);
+_hidden const char *libxl__live_device_backend_path(libxl__gc *gc, libxl__device *device);
 _hidden int libxl__parse_backend_path(libxl__gc *gc, const char *path,
                                       libxl__device *dev);
 _hidden int libxl__console_tty_path(libxl__gc *gc, uint32_t domid, int cons_num,
