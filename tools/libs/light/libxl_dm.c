@@ -2233,6 +2233,9 @@ static void spawn_stubdom_pvqemu_cb(libxl__egc *egc,
                                 libxl__dm_spawn_state *stubdom_dmss,
                                 int rc);
 
+static void spawn_stub_pcis_dm(libxl__egc *egc,
+                               libxl__multidev *multidev, int ret);
+
 static void spawn_stub_launch_dm(libxl__egc *egc,
                                  libxl__multidev *aodevs, int ret);
 
@@ -2438,10 +2441,37 @@ retry_transaction:
             goto retry_transaction;
 
     libxl__multidev_begin(ao, &sdss->multidev);
-    sdss->multidev.callback = spawn_stub_launch_dm;
+    sdss->multidev.callback = spawn_stub_pcis_dm;
     libxl__add_disks(egc, ao, dm_domid, dm_config, &sdss->multidev);
     libxl__multidev_prepared(egc, &sdss->multidev, 0);
 
+    return;
+
+out:
+    assert(ret);
+    spawn_stubdom_pvqemu_cb(egc, &sdss->pvqemu, ret);
+}
+
+static void spawn_stub_pcis_dm(libxl__egc *egc,
+                               libxl__multidev *multidev, int ret)
+{
+    libxl__stub_dm_spawn_state *sdss = CONTAINER_OF(multidev, *sdss, multidev);
+    STATE_AO_GC(sdss->dm.spawn.ao);
+
+    /* convenience aliases */
+    libxl_domain_config *const guest_config = sdss->dm.guest_config;
+    const int guest_domid = sdss->dm.guest_domid;
+    uint32_t dm_domid = sdss->pvqemu.guest_domid;
+
+    if (ret) {
+        LOGD(ERROR, guest_domid, "error connecting disk devices");
+        goto out;
+    }
+
+    libxl__multidev_begin(ao, &sdss->multidev);
+    sdss->multidev.callback = spawn_stub_launch_dm;
+    libxl__add_pcis(egc, ao, dm_domid, guest_config, &sdss->multidev);
+    libxl__multidev_prepared(egc, &sdss->multidev, 0);
     return;
 
 out:
@@ -2468,7 +2498,7 @@ static void spawn_stub_launch_dm(libxl__egc *egc,
     int need_qemu;
 
     if (ret) {
-        LOGD(ERROR, guest_domid, "error connecting disk devices");
+        LOGD(ERROR, guest_domid, "error connecting pci devices");
         goto out;
      }
 

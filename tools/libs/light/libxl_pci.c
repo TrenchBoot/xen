@@ -1434,10 +1434,6 @@ static void pci_add_dm_done(libxl__egc *egc,
 
     if (rc) goto out;
 
-    /* stubdomain is always running by now, even at create time */
-    if (isstubdom)
-        starting = false;
-
     sysfs_path = GCSPRINTF(SYSFS_PCI_DEV"/"PCI_BDF"/resource", pci->domain,
                            pci->bus, pci->dev, pci->func);
     f = fopen(sysfs_path, "r");
@@ -1670,6 +1666,13 @@ void libxl__device_pci_add(libxl__egc *egc, uint32_t domid,
     rc = libxl__device_pci_setdefault(gc, domid, pci, !starting);
     if (rc) goto out;
 
+    stubdomid = libxl_get_stubdom_id(ctx, domid);
+    if (stubdomid != 0 && starting) {
+        /* Initial work already done when attaching to the stubdom */
+        device_pci_add_stubdom_done(egc, pas, 0); /* must be last */
+        return;
+    }
+
     if (pci->seize && !pciback_dev_is_assigned(gc, pci)) {
         rc = libxl__device_pci_assignable_add(gc, pci, 1);
         if ( rc )
@@ -1688,8 +1691,7 @@ void libxl__device_pci_add(libxl__egc *egc, uint32_t domid,
 
     libxl__device_pci_reset(gc, pci->domain, pci->bus, pci->dev, pci->func);
 
-    stubdomid = libxl_get_stubdom_id(ctx, domid);
-    if (stubdomid != 0) {
+    if (stubdomid != 0 && !starting) {
         pas->callback = device_pci_add_stubdom_wait;
 
         do_pci_add(egc, stubdomid, pas); /* must be last */
@@ -1831,9 +1833,9 @@ typedef struct {
 
 static void add_pcis_done(libxl__egc *, libxl__multidev *, int rc);
 
-static void libxl__add_pcis(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
-                            libxl_domain_config *d_config,
-                            libxl__multidev *multidev)
+void libxl__add_pcis(libxl__egc *egc, libxl__ao *ao, uint32_t domid,
+                     libxl_domain_config *d_config,
+                     libxl__multidev *multidev)
 {
     AO_GC;
     add_pcis_state *apds;
