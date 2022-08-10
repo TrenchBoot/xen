@@ -292,6 +292,31 @@ struct xen_ondemand {
     uint32_t up_threshold;
 };
 
+struct xen_hwp_para {
+    /*
+     * bits 6:0   - 7bit mantissa
+     * bits 9:7   - 3bit base-10 exponent
+     * btis 15:10 - Unused - must be 0
+     */
+#define HWP_ACT_WINDOW_MANTISSA_MASK  0x7f
+#define HWP_ACT_WINDOW_EXPONENT_MASK  0x7
+#define HWP_ACT_WINDOW_EXPONENT_SHIFT 7
+    uint16_t activity_window;
+    /* energy_perf range 0-255 if 1. Otherwise 0-15 */
+#define XEN_SYSCTL_HWP_FEAT_ENERGY_PERF (1 << 0)
+    /* activity_window supported if 1 */
+#define XEN_SYSCTL_HWP_FEAT_ACT_WINDOW  (1 << 1)
+    uint8_t features; /* bit flags for features */
+    uint8_t lowest;
+    uint8_t most_efficient;
+    uint8_t guaranteed;
+    uint8_t highest;
+    uint8_t minimum;
+    uint8_t maximum;
+    uint8_t desired;
+    uint8_t energy_perf;
+};
+
 #define XEN_HWP_GOVERNOR "hwp-internal"
 /*
  * cpufreq para name of this structure named
@@ -324,6 +349,7 @@ struct xen_get_cpufreq_para {
     union {
         struct  xen_userspace userspace;
         struct  xen_ondemand ondemand;
+        struct  xen_hwp_para hwp_para;
     } u;
 
     int32_t turbo_enabled;

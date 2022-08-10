@@ -247,5 +247,7 @@ void intel_feature_detect(struct cpufreq_policy *policy);
 
 extern bool opt_cpufreq_hwp;
 extern bool opt_cpufreq_hdc;
+int get_hwp_para(const struct cpufreq_policy *policy,
+                 struct xen_hwp_para *hwp_para);
 
 #endif /* __XEN_CPUFREQ_PM_H__ */
