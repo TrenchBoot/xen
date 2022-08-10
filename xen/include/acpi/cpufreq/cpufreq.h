@@ -249,5 +249,7 @@ extern bool opt_cpufreq_hwp;
 extern bool opt_cpufreq_hdc;
 int get_hwp_para(const struct cpufreq_policy *policy,
                  struct xen_hwp_para *hwp_para);
+int set_hwp_para(struct cpufreq_policy *policy,
+                 struct xen_set_hwp_para *set_hwp);
 
 #endif /* __XEN_CPUFREQ_PM_H__ */
