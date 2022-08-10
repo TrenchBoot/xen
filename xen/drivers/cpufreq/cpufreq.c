@@ -563,6 +563,38 @@ static void cpufreq_cmdline_common_para(struct cpufreq_policy *new_policy)
 
 static int __init cpufreq_handle_common_option(const char *name, const char *val)
 {
+    if (!strcmp(name, "hdc")) {
+        if (val) {
+            int ret = parse_bool(val, NULL);
+            if (ret != -1) {
+                opt_cpufreq_hdc = ret;
+                return 1;
+            }
+        } else {
+            opt_cpufreq_hdc = true;
+            return 1;
+        }
+    } else if (!strcmp(name, "no-hdc")) {
+        opt_cpufreq_hdc = false;
+        return 1;
+    }
+
+    if (!strcmp(name, "hwp")) {
+        if (val) {
+            int ret = parse_bool(val, NULL);
+            if (ret != -1) {
+                opt_cpufreq_hwp = ret;
+                return 1;
+            }
+        } else {
+            opt_cpufreq_hwp = true;
+            return 1;
+        }
+    } else if (!strcmp(name, "no-hwp")) {
+        opt_cpufreq_hwp = false;
+        return 1;
+    }
+
     if (!strcmp(name, "maxfreq") && val) {
         usr_max_freq = simple_strtoul(val, NULL, 0);
         return 1;

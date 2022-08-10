@@ -643,7 +643,10 @@ static int __init cf_check cpufreq_driver_init(void)
         switch ( boot_cpu_data.x86_vendor )
         {
         case X86_VENDOR_INTEL:
-            ret = cpufreq_register_driver(&acpi_cpufreq_driver);
+            if ( hwp_available() )
+                ret = hwp_register_driver();
+            else
+                ret = cpufreq_register_driver(&acpi_cpufreq_driver);
             break;
 
         case X86_VENDOR_AMD:

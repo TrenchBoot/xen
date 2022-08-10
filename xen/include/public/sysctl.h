@@ -292,6 +292,7 @@ struct xen_ondemand {
     uint32_t up_threshold;
 };
 
+#define XEN_HWP_GOVERNOR "hwp-internal"
 /*
  * cpufreq para name of this structure named
  * same as sysfs file name of native linux

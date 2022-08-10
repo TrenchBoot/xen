@@ -245,4 +245,7 @@ void cpufreq_dbs_timer_resume(void);
 
 void intel_feature_detect(struct cpufreq_policy *policy);
 
+extern bool opt_cpufreq_hwp;
+extern bool opt_cpufreq_hdc;
+
 #endif /* __XEN_CPUFREQ_PM_H__ */
