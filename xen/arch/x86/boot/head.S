@@ -4,6 +4,7 @@
 #include <public/xen.h>
 #include <asm/asm_defns.h>
 #include <asm/fixmap.h>
+#include <asm/intel-txt.h>
 #include <asm/page.h>
 #include <asm/processor.h>
 #include <asm/msr-index.h>
@@ -36,6 +37,7 @@
 #define MB2_TT(name)      (MULTIBOOT2_TAG_TYPE_##name)
 
 #define XEN_HVM_START_MAGIC_VALUE 0x336ec578
+#define SLAUNCH_BOOTLOADER_MAGIC  0x4c534254
 
         .macro mb2ht_args arg:req, args:vararg
         .long \arg
@@ -125,6 +127,25 @@ multiboot2_header:
 
         .size multiboot2_header, . - multiboot2_header
         .type multiboot2_header, @object
+
+#if CONFIG_SLAUNCH
+SYM(mle_header, DATA, LOCAL, 16)
+        .long   0x9082ac5a  /* UUID0 */
+        .long   0x74a7476f  /* UUID1 */
+        .long   0xa2555c0f  /* UUID2 */
+        .long   0x42b651cb  /* UUID3 */
+        .long   (.Lmle_header_end - mle_header)  /* MLE header size */
+        .long   0x00020002  /* MLE version 2.2 */
+        .long   (slaunch_stub_entry - start)  /* Linear entry point of MLE (SINIT virt. address) */
+        .long   0x00000000  /* First valid page of MLE */
+        .long   0x00000000  /* Offset within binary of first byte of MLE */
+        .long   (_end - start)  /* Offset within binary of last byte + 1 of MLE */
+        .long   0x00000723  /* Bit vector of MLE-supported capabilities */
+        .long   0x00000000  /* Starting linear address of command line (unused) */
+        .long   0x00000000  /* Ending linear address of command line (unused) */
+.Lmle_header_end:
+        END(mle_header)
+#endif
 
         .section .init.rodata, "a", @progbits
 
@@ -332,6 +353,43 @@ cs32_switch:
         /* Jump to earlier loaded address. */
         jmp     *%edi
 
+#if CONFIG_SLAUNCH
+        /*
+         * Entry point for TrenchBoot Secure Launch on Intel TXT platforms.
+         *
+         * CPU is in 32b protected mode with paging disabled. On entry:
+         * - %ebx = %eip = MLE entry point,
+         * - stack pointer is undefined,
+         * - CS is flat 4GB code segment,
+         * - DS, ES, SS, FS and GS are undefined according to TXT SDG, but this
+         *   would make it impossible to initialize GDTR, because GDT base must
+         *   be relocated in the descriptor, which requires write access that
+         *   CS doesn't provide. Instead we have to assume that some data
+         *   segment register is set by SINIT ACM as flat 4GB data segment and
+         *   chose DS as that register (LGDT instruction uses it by default).
+         *
+         * Additional restrictions:
+         * - some MSRs are partially cleared, among them IA32_MISC_ENABLE, so
+         *   some capabilities might be reported as disabled even if they are
+         *   supported by CPU
+         * - interrupts (including NMIs and SMIs) are disabled and must be
+         *   enabled later
+         * - trying to enter real mode results in reset
+         * - APs are in a special SENTER sleep state and must be woken up by
+         *   writing a non-zero value at a MONITORed address or via
+         *   GETSEC[WAKEUP] instruction, depending on which is supported by a
+         *   given SINIT ACM
+         */
+slaunch_stub_entry:
+        /* Calculate the load base address. */
+        mov     %ebx, %esi
+        sub     $sym_offs(slaunch_stub_entry), %esi
+
+        /* Mark Secure Launch boot protocol and jump to common entry. */
+        mov     $SLAUNCH_BOOTLOADER_MAGIC, %eax
+        jmp     .Lset_stack
+#endif /* CONFIG_SLAUNCH */
+
 #ifdef CONFIG_PVH_GUEST
 ELFNOTE(Xen, XEN_ELFNOTE_PHYS32_ENTRY, .long sym_offs(__pvh_start))
 
@@ -371,6 +429,7 @@ __start:
         /* Restore the clobbered field. */
         mov     %edx, (%ebx)
 
+.Lset_stack:
         /* Set up stack. */
         lea     STACK_SIZE - CPUINFO_sizeof + sym_esi(cpu0_stack), %esp
 
@@ -419,6 +478,12 @@ __start:
         /* Bootloaders may set multiboot{1,2}.mem_lower to a nonzero value. */
         xor     %edx,%edx
 
+#if CONFIG_SLAUNCH
+        /* Check for TrenchBoot slaunch bootloader. */
+        cmp     $SLAUNCH_BOOTLOADER_MAGIC, %eax
+        je      .Lslaunch_proto
+#endif
+
         /* Check for Multiboot2 bootloader. */
         cmp     $MULTIBOOT2_BOOTLOADER_MAGIC,%eax
         je      .Lmultiboot2_proto
@@ -433,6 +498,17 @@ __start:
         /* Not available? BDA value will be fine. */
         cmovnz  MB_mem_lower(%ebx),%edx
         jmp     trampoline_bios_setup
+
+#if CONFIG_SLAUNCH
+.Lslaunch_proto:
+        /*
+         * Upon reaching here, CPU state mostly matches the one set up by the
+         * bootloader with ESP, ESI and EDX being clobbered above.
+         */
+
+        /* Hang as this boot path is yet to be implemented. */
+        jmp     .Lslaunch_proto
+#endif
 
 .Lmultiboot2_proto:
         /* Skip Multiboot2 information fixed part. */
