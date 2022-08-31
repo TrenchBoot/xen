@@ -187,6 +187,14 @@ config TBOOT
 
 	  If unsure, stay with the default.
 
+config SLAUNCH
+	bool "DRTM via Secure Launch support"
+	depends on INTEL
+	default y
+	help
+	  Allows support for Secure Launch DRTM boot.  This is a boot in a
+	  measured environment which requires a compatible bootloader.
+
 config X86_PSR
 	bool "Platform Shared Resource support" if EXPERT
 	default INTEL
