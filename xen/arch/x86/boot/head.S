@@ -4,6 +4,7 @@
 #include <public/xen.h>
 #include <asm/asm_defns.h>
 #include <asm/fixmap.h>
+#include <asm/intel_txt.h>
 #include <asm/page.h>
 #include <asm/processor.h>
 #include <asm/msr-index.h>
@@ -123,6 +124,25 @@ multiboot2_header:
 
         .size multiboot2_header, . - multiboot2_header
         .type multiboot2_header, @object
+
+        .balign 16
+mle_header:
+        .long   0x9082ac5a  /* UUID0 */
+        .long   0x74a7476f  /* UUID1 */
+        .long   0xa2555c0f  /* UUID2 */
+        .long   0x42b651cb  /* UUID3 */
+        .long   0x00000034  /* MLE header size */
+        .long   0x00020002  /* MLE version 2.2 */
+        .long   (slaunch_stub_entry - start)  /* Linear entry point of MLE (SINIT virt. address) */
+        .long   0x00000000  /* First valid page of MLE */
+        .long   0x00000000  /* Offset within binary of first byte of MLE */
+        .long   (_end - start)  /* Offset within binary of last byte + 1 of MLE */
+        .long   0x00000223  /* Bit vector of MLE-supported capabilities */
+        .long   0x00000000  /* Starting linear address of command line (unused) */
+        .long   0x00000000  /* Ending linear address of command line (unused) */
+
+        .size mle_header, .-mle_header
+        .type mle_header, @object
 
         .section .init.rodata, "a", @progbits
 
@@ -329,6 +349,34 @@ cs32_switch:
         /* Jump to earlier loaded address. */
         jmp     *%edi
 
+        /*
+         * Entry point for TrenchBoot Secure Launch on Intel TXT platforms.
+         *
+         * CPU is in 32b protected mode with paging disabled. On entry:
+         * - %ebx = %eip = MLE entry point,
+         * - stack pointer is undefined,
+         * - CS is flat 4GB code segment,
+         * - DS, ES, SS, FS and GS are undefined.
+         *
+         * Additional restrictions:
+         * - some MSRs are partially cleared, among them IA32_MISC_ENABLE, so
+         *   some capabilities might be reported as disabled even if they are
+         *   supported by CPU
+         * - interrupts (including NMIs and SMIs) are disabled and must be
+         *   enabled later
+         * - trying to enter real mode results in reset
+         * - APs must be brought up by MONITOR or GETSEC[WAKEUP], depending on
+         *   which is supported by a given SINIT ACM
+         */
+slaunch_stub_entry:
+        /* Calculate the load base address. */
+        mov     %ebx, %esi
+        sub     $sym_offs(slaunch_stub_entry), %esi
+
+        /* Mark Secure Launch boot protocol and jump to common entry. */
+        mov     $SLAUNCH_BOOTLOADER_MAGIC, %eax
+        jmp     .Lset_stack
+
 #ifdef CONFIG_PVH_GUEST
 ELFNOTE(Xen, XEN_ELFNOTE_PHYS32_ENTRY, .long sym_offs(__pvh_start))
 
@@ -368,12 +416,13 @@ __start:
         /* Restore the clobbered field. */
         mov     %edx, (%ebx)
 
+.Lset_stack:
         /* Set up stack. */
         lea     STACK_SIZE - CPUINFO_sizeof + sym_esi(cpu0_stack), %esp
 
         /* Initialize GDTR and basic data segments. */
-        add     %esi, sym_esi(gdt_boot_base)
-        lgdt    sym_esi(gdt_boot_descr)
+        add     %esi, %cs:sym_esi(gdt_boot_base)
+        lgdt    %cs:sym_esi(gdt_boot_descr)
 
         mov     $BOOT_DS, %ecx
         mov     %ecx, %ds
