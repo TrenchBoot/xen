@@ -55,6 +55,16 @@ If ``CONFIG_PVH_GUEST`` was selected at build time, an Elf note is included
 which indicates the ability to use the PVH boot protocol, and registers
 ``__pvh_start`` as the entrypoint, entered in 32bit mode.
 
+A combination of Multiboot 2 and Measured Launched Environment (MLE) headers
+is used to support Dynamic Root of Trust for Measurement (DRTM) for legacy
+(BIOS) boot.  DRTM is a way to establish hardware root of trust which
+excludes firmware and is not directly tied to hardware's boot process.  The
+separate entry point called ``slaunch_stub_entry`` is used mainly to
+differentiate from other kinds of boots.  It moves a magic number to ``EAX``
+before jumping into common startup code.  More details about Secure Launch
+data structures processed by Xen in this boot mode can be found in
+`<https://trenchboot.org/specifications/Secure_Launch/>`_.
+
 
 xen.gz
 ~~~~~~
