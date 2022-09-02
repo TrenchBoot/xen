@@ -50,6 +50,7 @@
 #include <asm/pv/domain.h>
 #include <asm/setup.h>
 #include <asm/shstk.h>
+#include <asm/slaunch.h>
 #include <asm/smp.h>
 #include <asm/spec_ctrl.h>
 #include <asm/stubs.h>
@@ -1128,9 +1129,6 @@ static struct domain *__init create_dom0(struct boot_info *bi)
     return d;
 }
 
-/* How much of the directmap is prebuilt at compile time. */
-#define PREBUILT_MAP_LIMIT (1 << L2_PAGETABLE_SHIFT)
-
 void asmlinkage __init noreturn __start_xen(void)
 {
     const char *memmap_type = NULL;
@@ -1352,7 +1350,7 @@ void asmlinkage __init noreturn __start_xen(void)
     }
     else if ( efi_enabled(EFI_BOOT) )
         memmap_type = "EFI";
-    else if ( (e820_raw.nr_map = 
+    else if ( (e820_raw.nr_map =
                    copy_bios_e820(e820_raw.map,
                                   ARRAY_SIZE(e820_raw.map))) != 0 )
     {
@@ -1470,6 +1468,12 @@ void asmlinkage __init noreturn __start_xen(void)
             printk("  - Disabling PV32 due to CET\n");
         }
 #endif
+    }
+
+    if ( slaunch_active )
+    {
+        slaunch_map_mem_regions();
+        slaunch_reserve_mem_regions();
     }
 
     /* Sanitise the raw E820 map to produce a final clean version. */
@@ -1814,7 +1818,7 @@ void asmlinkage __init noreturn __start_xen(void)
         unsigned long e = min(s + PFN_UP(kexec_crash_area.size),
                               PFN_UP(__pa(HYPERVISOR_VIRT_END - 1)));
 
-        if ( e > s ) 
+        if ( e > s )
             map_pages_to_xen((unsigned long)__va(kexec_crash_area.start),
                              _mfn(s), e - s, PAGE_HYPERVISOR);
     }
@@ -1953,7 +1957,7 @@ void asmlinkage __init noreturn __start_xen(void)
 
     open_softirq(NEW_TLBFLUSH_CLOCK_PERIOD_SOFTIRQ, new_tlbflush_clock_period);
 
-    if ( opt_watchdog ) 
+    if ( opt_watchdog )
         nmi_watchdog = NMI_LOCAL_APIC;
 
     find_smp_config();
@@ -2172,7 +2176,7 @@ void asmlinkage __init noreturn __start_xen(void)
 
     do_initcalls();
 
-    if ( opt_watchdog ) 
+    if ( opt_watchdog )
         watchdog_setup();
 
     if ( !tboot_protect_mem_regions() )

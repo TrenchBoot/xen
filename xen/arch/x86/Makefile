@@ -36,6 +36,7 @@ obj-$(CONFIG_GDBSX) += gdbsx.o
 obj-y += hypercall.o
 obj-y += i387.o
 obj-y += i8259.o
+obj-$(CONFIG_SLAUNCH) += intel-txt.o
 obj-y += io_apic.o
 obj-$(CONFIG_LIVEPATCH) += livepatch.o
 obj-y += msi.o
