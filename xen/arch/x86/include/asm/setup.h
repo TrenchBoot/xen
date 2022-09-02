@@ -4,6 +4,9 @@
 #include <xen/multiboot.h>
 #include <asm/numa.h>
 
+/* How much of the directmap is prebuilt at compile time. */
+#define PREBUILT_MAP_LIMIT (1UL << L2_PAGETABLE_SHIFT)
+
 extern const char __2M_text_start[], __2M_text_end[];
 extern const char __2M_rodata_start[], __2M_rodata_end[];
 extern char __2M_init_start[], __2M_init_end[];
