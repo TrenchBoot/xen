@@ -55,6 +55,7 @@
 #include <asm/guest.h>
 #include <asm/microcode.h>
 #include <asm/pv/domain.h>
+#include <asm/intel_txt.h>
 
 /* opt_nosmp: If true, secondary processors are ignored. */
 static bool __initdata opt_nosmp;
@@ -1139,6 +1140,10 @@ void __init noreturn __start_xen(unsigned long mbi_p)
         }
 #endif
     }
+
+    /* Reserve TXT heap and SINIT for Secure Launch path. */
+    if ( sl_status )
+        protect_txt_mem_regions();
 
     /* Sanitise the raw E820 map to produce a final clean version. */
     max_page = raw_max_page = init_e820(memmap_type, &e820_raw);
