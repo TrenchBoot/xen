@@ -50,6 +50,7 @@
 #include <asm/pv/domain.h>
 #include <asm/setup.h>
 #include <asm/shstk.h>
+#include <asm/slaunch.h>
 #include <asm/smp.h>
 #include <asm/spec_ctrl.h>
 #include <asm/stubs.h>
@@ -1128,9 +1129,6 @@ static struct domain *__init create_dom0(struct boot_info *bi)
     return d;
 }
 
-/* How much of the directmap is prebuilt at compile time. */
-#define PREBUILT_MAP_LIMIT (1 << L2_PAGETABLE_SHIFT)
-
 void asmlinkage __init noreturn __start_xen(void)
 {
     const char *memmap_type = NULL;
@@ -1470,6 +1468,12 @@ void asmlinkage __init noreturn __start_xen(void)
             printk("  - Disabling PV32 due to CET\n");
         }
 #endif
+    }
+
+    if ( slaunch_active )
+    {
+        slaunch_map_mem_regions();
+        slaunch_reserve_mem_regions();
     }
 
     /* Sanitise the raw E820 map to produce a final clean version. */
