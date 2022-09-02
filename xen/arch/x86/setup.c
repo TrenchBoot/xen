@@ -60,6 +60,7 @@
 #include <asm/prot-key.h>
 #include <asm/pv/domain.h>
 #include <asm/trampoline.h>
+#include <asm/intel_txt.h>
 
 /* opt_nosmp: If true, secondary processors are ignored. */
 static bool __initdata opt_nosmp;
@@ -959,9 +960,6 @@ static struct domain *__init create_dom0(const module_t *image,
     return d;
 }
 
-/* How much of the directmap is prebuilt at compile time. */
-#define PREBUILT_MAP_LIMIT (1 << L2_PAGETABLE_SHIFT)
-
 void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
 {
     const char *memmap_type = NULL, *loader, *cmdline = "";
@@ -1277,6 +1275,14 @@ void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
             printk("  - Disabling PV32 due to CET\n");
         }
 #endif
+    }
+
+    if ( slaunch_active )
+    {
+        /* Prepare for TXT-related code. */
+        map_txt_mem_regions();
+        /* Reserve TXT heap and SINIT. */
+        protect_txt_mem_regions();
     }
 
     /* Sanitise the raw E820 map to produce a final clean version. */
