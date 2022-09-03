@@ -2637,10 +2637,11 @@ static void spawn_qmp_proxy(libxl__egc *egc,
     sdss->qmp_proxy_spawn.failure_cb = qmp_proxy_startup_failed;
     sdss->qmp_proxy_spawn.detached_cb = qmp_proxy_detached;
 
-    const int arraysize = 6;
+    const int arraysize = 7;
     GCNEW_ARRAY(args, arraysize);
     args[nr++] = STUBDOM_QMP_PROXY_PATH;
     args[nr++] = GCSPRINTF("--state-path=%s", sdss->qmp_proxy_spawn.xspath);
+    args[nr++] = "--reconnect-marker=1";
     args[nr++] = GCSPRINTF("%u", dm_domid);
     args[nr++] = GCSPRINTF("%s/device-model/%u/qmp-vchan", dom_path, guest_domid);
     args[nr++] = (char*)libxl__qemu_qmp_path(gc, guest_domid);
