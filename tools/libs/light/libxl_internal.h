@@ -3632,6 +3632,7 @@ struct libxl__domain_suspend_state {
                               struct libxl__domain_suspend_state*, int rc);
     void (*callback_common_done)(libxl__egc*,
                                  struct libxl__domain_suspend_state*, int ok);
+    struct libxl__domain_suspend_state *dm_dsps, *parent_dsps;
 };
 int libxl__domain_suspend_init(libxl__egc *egc,
                                libxl__domain_suspend_state *dsps,
