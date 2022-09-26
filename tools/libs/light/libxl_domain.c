@@ -567,6 +567,7 @@ int libxl_domain_suspend_only(libxl_ctx *ctx, uint32_t domid,
     dsps->ao = ao;
     dsps->domid = domid;
     dsps->type = type;
+    LOGD(DEBUG, domid, "Received request to suspend domain");
     rc = libxl__domain_suspend_init(egc, dsps, type);
     if (rc < 0) goto out_err;
     dsps->callback_common_done = domain_suspend_empty_cb;
