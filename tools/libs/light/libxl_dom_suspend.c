@@ -321,27 +321,36 @@ static void suspend_common_wait_guest_watch(libxl__egc *egc,
     suspend_common_wait_guest_check(egc, dsps);
 }
 
+static int check_guest_status(libxl__gc *gc, const uint32_t domid,
+                              xc_domaininfo_t *info, const char *what)
+{
+    int ret = xc_domain_getinfolist(CTX->xch, domid, 1, info);
+
+    if (ret < 0) {
+        LOGED(ERROR, domid, "unable to check for status of guest");
+        return ERROR_FAIL;
+    }
+
+    if (!(ret == 1 && info->domain == domid)) {
+        LOGED(ERROR, domid, "guest we were %s has been destroyed", what);
+        return ERROR_FAIL;
+    }
+
+    return 0;
+}
+
 static void suspend_common_wait_guest_check(libxl__egc *egc,
         libxl__domain_suspend_state *dsps)
 {
     STATE_AO_GC(dsps->ao);
     xc_domaininfo_t info;
-    int ret;
     int shutdown_reason;
 
     /* Convenience aliases */
     const uint32_t domid = dsps->domid;
 
-    ret = xc_domain_getinfolist(CTX->xch, domid, 1, &info);
-    if (ret < 0) {
-        LOGED(ERROR, domid, "unable to check for status of guest");
+    if (check_guest_status(gc, domid, &info, "suspending"))
         goto err;
-    }
-
-    if (!(ret == 1 && info.domain == domid)) {
-        LOGED(ERROR, domid, "guest we were suspending has been destroyed");
-        goto err;
-    }
 
     if (!(info.flags & XEN_DOMINF_shutdown))
         /* keep waiting */
