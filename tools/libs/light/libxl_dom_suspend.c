@@ -451,6 +451,22 @@ int libxl__domain_resume_device_model_deprecated(libxl__gc *gc, uint32_t domid)
     return 0;
 }
 
+/* Just resumes the domain.  The device model must have been resumed already. */
+static int domain_resume_raw(libxl__gc *gc, uint32_t domid, int suspend_cancel)
+{
+    if (xc_domain_resume(CTX->xch, domid, suspend_cancel)) {
+        LOGED(ERROR, domid, "xc_domain_resume failed");
+        return ERROR_FAIL;
+    }
+
+    if (!xs_resume_domain(CTX->xsh, domid)) {
+        LOGED(ERROR, domid, "xs_resume_domain failed");
+        return ERROR_FAIL;
+    }
+
+    return 0;
+}
+
 int libxl__domain_resume_deprecated(libxl__gc *gc, uint32_t domid, int suspend_cancel)
 {
     int rc = 0;
@@ -469,16 +485,7 @@ int libxl__domain_resume_deprecated(libxl__gc *gc, uint32_t domid, int suspend_c
         }
     }
 
-    if (xc_domain_resume(CTX->xch, domid, suspend_cancel)) {
-        LOGED(ERROR, domid, "xc_domain_resume failed");
-        rc = ERROR_FAIL;
-        goto out;
-    }
-
-    if (!xs_resume_domain(CTX->xsh, domid)) {
-        LOGED(ERROR, domid, "xs_resume_domain failed");
-        rc = ERROR_FAIL;
-    }
+    rc = domain_resume_raw(gc, domid, suspend_cancel);
 out:
     return rc;
 }
@@ -660,19 +667,9 @@ static void domain_resume_done(libxl__egc *egc,
     /* Convenience aliases */
     libxl_domid domid = dmrs->domid;
 
-    if (rc) goto out;
+    if (!rc)
+        rc = domain_resume_raw(gc, domid, dmrs->suspend_cancel);
 
-    if (xc_domain_resume(CTX->xch, domid, dmrs->suspend_cancel)) {
-        LOGED(ERROR, domid, "xc_domain_resume failed");
-        rc = ERROR_FAIL;
-        goto out;
-    }
-
-    if (!xs_resume_domain(CTX->xsh, domid)) {
-        LOGED(ERROR, domid, "xs_resume_domain failed");
-        rc = ERROR_FAIL;
-    }
-out:
     dmrs->callback(egc, dmrs, rc);
 }
 
