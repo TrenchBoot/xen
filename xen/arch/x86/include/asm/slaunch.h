@@ -17,8 +17,16 @@ struct slaunch_early_init_results
     uint32_t slrt_pa;
 } __packed;
 
+#ifdef CONFIG_SLAUNCH
 /* Indicates an active Secure Launch boot. */
 extern bool slaunch_active;
+#else
+/*
+ * This avoids `#ifdef CONFIG_SLAUNCH` around `if ( slaunch_active )` thanks to
+ * dead code elimination.
+ */
+static bool slaunch_active = false;
+#endif
 
 /*
  * Holds physical address of SLRT.  Use slaunch_get_slrt() to access SLRT

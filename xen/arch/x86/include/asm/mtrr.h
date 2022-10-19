@@ -63,6 +63,14 @@ extern uint8_t pat_type_2_pte_flags(uint8_t pat_type);
 extern void mtrr_aps_sync_begin(void);
 extern void mtrr_aps_sync_end(void);
 
+struct mtrr_pausing_state {
+	bool pge;
+	uint64_t def_type;
+};
+
+extern void mtrr_pause_caching(struct mtrr_pausing_state *state);
+extern void mtrr_resume_caching(struct mtrr_pausing_state state);
+
 extern bool mtrr_var_range_msr_set(struct domain *d, struct mtrr_state *m,
                                    uint32_t msr, uint64_t msr_content);
 extern bool mtrr_fix_range_msr_set(struct domain *d, struct mtrr_state *m,

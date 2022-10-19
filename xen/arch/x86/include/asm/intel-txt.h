@@ -392,6 +392,9 @@ void txt_map_mem_regions(void);
 /* Marks TXT-specific memory as used to avoid its corruption. */
 void txt_reserve_mem_regions(void);
 
+/* Restores original MTRR values saved by a bootloader before starting DRTM. */
+void txt_restore_mtrrs(bool verbose);
+
 #endif /* !__ASSEMBLER__ */
 
 #endif /* X86_INTEL_TXT_H */
