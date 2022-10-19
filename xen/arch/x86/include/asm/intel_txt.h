@@ -303,5 +303,6 @@ static inline int is_in_pmr(struct txt_os_sinit_data *os_sinit, uint64_t base,
 }
 
 extern void protect_txt_mem_regions(void);
+extern void txt_restore_mtrrs(bool e820_verbose);
 
 #endif /* __ASSEMBLY__ */
