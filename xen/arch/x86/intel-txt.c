@@ -6,10 +6,13 @@
 
 #include <xen/bug.h>
 #include <xen/init.h>
+#include <xen/kernel.h>
 #include <xen/lib.h>
 #include <xen/types.h>
 #include <asm/e820.h>
 #include <asm/intel-txt.h>
+#include <asm/msr.h>
+#include <asm/mtrr.h>
 #include <asm/slaunch.h>
 
 /*
@@ -108,4 +111,85 @@ void __init txt_reserve_mem_regions(void)
     ok = reserve_ram(&e820_raw, TXT_PRIV_CONFIG_REGS_BASE,
                      TXT_PRIV_CONFIG_REGS_BASE + TXT_CONFIG_SPACE_SIZE);
     BUG_ON(!ok);
+}
+
+void __init txt_restore_mtrrs(bool verbose)
+{
+    const struct slr_entry_hdr *entry;
+    const struct slr_entry_intel_info *intel_info;
+    uint64_t mtrr_cap, mtrr_def, base, mask;
+    unsigned int i;
+    unsigned int vcnt;
+    uint64_t def_type;
+    struct mtrr_pausing_state pausing_state;
+
+    rdmsrl(MSR_MTRRcap, mtrr_cap);
+    rdmsrl(MSR_MTRRdefType, mtrr_def);
+
+    vcnt = mtrr_cap & 0xFF;
+
+    if ( verbose )
+    {
+        printk("MTRRs set previously for SINIT ACM:\n");
+        printk(" MTRR cap: %"PRIx64" type: %"PRIx64"\n", mtrr_cap, mtrr_def);
+
+        for ( i = 0; i < vcnt; i++ )
+        {
+            rdmsrl(MSR_IA32_MTRR_PHYSBASE(i), base);
+            rdmsrl(MSR_IA32_MTRR_PHYSMASK(i), mask);
+
+            printk(" MTRR[%d]: base %"PRIx64" mask %"PRIx64"\n",
+                   i, base, mask);
+        }
+    }
+
+    entry =
+        slr_next_entry_by_tag(slaunch_get_slrt(), NULL, SLR_ENTRY_INTEL_INFO);
+    intel_info = container_of(entry, const struct slr_entry_intel_info, hdr);
+
+    if ( vcnt != intel_info->saved_bsp_mtrrs.mtrr_vcnt )
+    {
+        printk("Bootloader saved %ld MTRR values, but there should be %d\n",
+               intel_info->saved_bsp_mtrrs.mtrr_vcnt, vcnt);
+        /* Choose the smaller one to be on the safe side. */
+        if ( intel_info->saved_bsp_mtrrs.mtrr_vcnt < vcnt )
+            vcnt = intel_info->saved_bsp_mtrrs.mtrr_vcnt;
+    }
+
+    def_type = intel_info->saved_bsp_mtrrs.default_mem_type;
+    mtrr_pause_caching(&pausing_state);
+
+    for ( i = 0; i < vcnt; i++ )
+    {
+        base = intel_info->saved_bsp_mtrrs.mtrr_pair[i].mtrr_physbase;
+        mask = intel_info->saved_bsp_mtrrs.mtrr_pair[i].mtrr_physmask;
+        wrmsrl(MSR_IA32_MTRR_PHYSBASE(i), base);
+        wrmsrl(MSR_IA32_MTRR_PHYSMASK(i), mask);
+    }
+
+    pausing_state.def_type = def_type;
+    mtrr_resume_caching(pausing_state);
+
+    if ( verbose )
+    {
+        printk("Restored MTRRs:\n");
+
+        /*
+         * If MTRRs are not enabled or WB is not the default, MTRRs won't be
+         * printed.
+         */
+        if ( !test_bit(11, &def_type) || (def_type & 0x7) == X86_MT_WB )
+        {
+            for ( i = 0; i < vcnt; i++ )
+            {
+                rdmsrl(MSR_IA32_MTRR_PHYSBASE(i), base);
+                rdmsrl(MSR_IA32_MTRR_PHYSMASK(i), mask);
+                printk(" MTRR[%d]: base %"PRIx64" mask %"PRIx64"\n",
+                       i, base, mask);
+            }
+        }
+    }
+
+    /* Restore IA32_MISC_ENABLES */
+    wrmsrl(MSR_IA32_MISC_ENABLE, intel_info->saved_misc_enable_msr);
 }
