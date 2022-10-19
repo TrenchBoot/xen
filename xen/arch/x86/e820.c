@@ -11,6 +11,8 @@
 #include <asm/mtrr.h>
 #include <asm/msr.h>
 #include <asm/guest.h>
+#include <asm/intel-txt.h>
+#include <asm/slaunch.h>
 
 /*
  * opt_mem: Limit maximum address of physical RAM.
@@ -498,6 +500,9 @@ static void __init machine_specific_memory_setup(struct e820map *raw)
     unsigned long mpt_limit, ro_mpt_limit;
     uint64_t top_of_ram, size;
     unsigned int i;
+
+    if ( slaunch_active )
+        txt_restore_mtrrs(e820_verbose);
 
     sanitize_e820_map(raw->map, &raw->nr_map);
     copy_e820_map(raw->map, raw->nr_map);
