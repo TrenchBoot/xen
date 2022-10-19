@@ -14,11 +14,6 @@
 #include <asm/cpufeature.h>
 #include "mtrr.h"
 
-struct mtrr_pausing_state {
-	bool pge;
-	uint64_t def_type;
-};
-
 static const struct fixed_range_block {
 	uint32_t base_msr;   /* start address of an MTRR block */
 	unsigned int ranges; /* number of MTRRs in this block  */
@@ -440,7 +435,7 @@ static DEFINE_SPINLOCK(set_atomicity_lock);
  * has been called.
  */
 
-static void mtrr_pause_caching(struct mtrr_pausing_state *state)
+void mtrr_pause_caching(struct mtrr_pausing_state *state)
 {
 	unsigned long cr4;
 
@@ -481,7 +476,7 @@ static void mtrr_pause_caching(struct mtrr_pausing_state *state)
 	alternative("wbinvd", "", X86_FEATURE_XEN_SELFSNOOP);
 }
 
-static void mtrr_resume_caching(struct mtrr_pausing_state state)
+void mtrr_resume_caching(struct mtrr_pausing_state state)
 {
 	/* Intel (P6) standard MTRRs */
 	mtrr_wrmsr(MSR_MTRRdefType, state.def_type);
