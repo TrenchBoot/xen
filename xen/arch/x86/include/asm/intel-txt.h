@@ -71,6 +71,8 @@
 #include <xen/multiboot2.h>
 #include <xen/slr-table.h>
 
+#include <asm/tpm1.h>
+
 /* Need to differentiate between pre- and post paging enabled. */
 #ifdef __EARLY_SLAUNCH__
 #include <xen/macros.h>
@@ -199,6 +201,19 @@ struct txt_sinit_mle_data {
     /* Versions >= 9 */
     /* Ext Data Elements */
 } __packed;
+
+struct txt_ev_log_container_12 {
+    char        Signature[20];      /* "TXT Event Container", null-terminated */
+    uint8_t     Reserved[12];
+    uint8_t     ContainerVerMajor;
+    uint8_t     ContainerVerMinor;
+    uint8_t     PCREventVerMajor;
+    uint8_t     PCREventVerMinor;
+    uint32_t    ContainerSize;      /* Allocated size */
+    uint32_t    PCREventsOffset;
+    uint32_t    NextEventOffset;
+    struct TPM12_PCREvent   PCREvents[];
+};
 
 /*
  * Functions to extract data from the Intel TXT Heap Memory.

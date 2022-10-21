@@ -7,13 +7,14 @@ obj32 += reloc.32.o
 obj32 += reloc-trampoline.32.o
 ifeq ($(CONFIG_SLAUNCH),y)
 obj32 += slaunch-early.32.o
+obj32 += tpm-early.32.o
 endif
 
 obj64 := reloc-trampoline.o
 
 exports := cmdline_parse_early,reloc,reloc_trampoline32
 ifeq ($(CONFIG_SLAUNCH),y)
-exports := $(exports),slaunch_early_init
+exports := $(exports),slaunch_early_init,tpm_extend_mbi
 endif
 
 nocov-y   += $(obj32) $(obj64)
@@ -37,6 +38,10 @@ $(obj)/%.32.o: $(src)/%.c FORCE
 	$(call if_changed_rule,cc_o_c)
 
 $(obj)/slaunch-early.32.o: XEN_CFLAGS += -D__EARLY_SLAUNCH__
+
+$(obj)/tpm-early.32.o: XEN_CFLAGS += -D__EARLY_SLAUNCH__
+$(obj)/tpm-early.32.o: $(src)/../tpm.c FORCE
+	$(call if_changed_rule,cc_o_c)
 
 orphan-handling-$(call ld-option,--orphan-handling=error) := --orphan-handling=error
 LDFLAGS_DIRECT-$(call ld-option,--warn-rwx-segments) := --no-warn-rwx-segments

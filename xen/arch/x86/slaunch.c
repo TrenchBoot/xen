@@ -16,6 +16,7 @@
 #include <asm/page.h>
 #include <asm/setup.h>
 #include <asm/slaunch.h>
+#include <asm/tpm.h>
 
 /*
  * These variables are assigned to by the code near Xen's entry point.
@@ -72,8 +73,12 @@ struct slr_table *__init slaunch_get_slrt(void)
 
 void __init slaunch_map_mem_regions(void)
 {
+    int rc;
     paddr_t evt_log_addr;
     uint32_t evt_log_size;
+
+    rc = slaunch_map_l2(TPM_TIS_BASE, TPM_TIS_SIZE);
+    BUG_ON(rc != 0);
 
     /* Vendor-specific part. */
     txt_map_mem_regions();
@@ -81,7 +86,7 @@ void __init slaunch_map_mem_regions(void)
     find_evt_log(slaunch_get_slrt(), &evt_log_addr, &evt_log_size);
     if ( evt_log_addr != 0 )
     {
-        int rc = slaunch_map_l2(evt_log_addr, evt_log_size);
+        rc = slaunch_map_l2(evt_log_addr, evt_log_size);
         BUG_ON(rc != 0);
     }
 }
