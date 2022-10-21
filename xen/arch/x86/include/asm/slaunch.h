@@ -11,6 +11,20 @@
 #include <xen/slr-table.h>
 #include <xen/types.h>
 
+#define DRTM_LOC                   2
+#define DRTM_CODE_PCR              17
+#define DRTM_DATA_PCR              18
+
+/*
+ * Secure Launch event log entry types. The TXT specification defines the base
+ * event value as 0x400 for DRTM values, use it regardless of the DRTM for
+ * consistency.
+ */
+#define DLE_EVTYPE_BASE            0x400
+#define DLE_EVTYPE_SLAUNCH         (DLE_EVTYPE_BASE + 0x102)
+#define DLE_EVTYPE_SLAUNCH_START   (DLE_EVTYPE_BASE + 0x103)
+#define DLE_EVTYPE_SLAUNCH_END     (DLE_EVTYPE_BASE + 0x104)
+
 struct slaunch_early_init_results
 {
     uint32_t mbi_pa;
