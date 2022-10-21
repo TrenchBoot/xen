@@ -63,6 +63,7 @@ obj-y += srat.o
 obj-y += string.o
 obj-$(CONFIG_SYSCTL) += sysctl.o
 obj-y += time.o
+obj-y += tpm.o
 obj-y += traps-setup.o
 obj-y += traps.o
 obj-$(CONFIG_INTEL) += tsx.o
