@@ -539,6 +539,11 @@ __start:
         pop     sym_esi(slaunch_slrt) /* save physical address of SLRT for C
                                          code */
 
+        mov     sym_esi(slaunch_slrt), %edx /* physical SLRT address */
+        mov     %ebx, %eax                  /* physical MBI address */
+        /* slaunch_measure_mbi(mbi/eax, slrt/edx) using fastcall. */
+        call    slaunch_measure_mbi
+
         /* Move magic number expected by Multiboot 2 to EAX and fall through. */
         movl    $MULTIBOOT2_BOOTLOADER_MAGIC, %eax
 #endif

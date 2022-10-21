@@ -7,6 +7,7 @@ obj32 += reloc.32.o
 obj32 += reloc-trampoline.32.o
 ifeq ($(CONFIG_SLAUNCH),y)
 obj32 += slaunch-early.32.o
+obj32 += slaunch-tpm-early.32.o
 endif
 obj32 += tpm-early.32.o
 
@@ -14,7 +15,7 @@ obj64 := reloc-trampoline.o
 
 exports := cmdline_parse_early,reloc,reloc_trampoline32
 ifeq ($(CONFIG_SLAUNCH),y)
-exports := $(exports),slaunch_early_init
+exports := $(exports),slaunch_early_init,slaunch_measure_mbi
 endif
 
 nocov-y   += $(obj32) $(obj64)
@@ -38,6 +39,10 @@ $(obj)/%.32.o: $(src)/%.c FORCE
 	$(call if_changed_rule,cc_o_c)
 
 $(obj)/slaunch-early.32.o: XEN_CFLAGS += -D__EARLY_SLAUNCH__
+
+$(obj)/slaunch-tpm-early.32.o: XEN_CFLAGS += -D__EARLY_SLAUNCH__
+$(obj)/slaunch-tpm-early.32.o: $(src)/../slaunch-tpm.c FORCE
+	$(call if_changed_rule,cc_o_c)
 
 $(obj)/tpm-early.32.o: XEN_CFLAGS += -D__EARLY_TPM__
 $(obj)/tpm-early.32.o: $(src)/../tpm.c FORCE
