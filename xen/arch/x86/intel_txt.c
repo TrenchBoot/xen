@@ -5,6 +5,7 @@
 #include <xen/string.h>
 #include <asm/page.h>
 #include <asm/intel_txt.h>
+#include <asm/tpm.h>
 #include <xen/init.h>
 #include <xen/mm.h>
 #include <xen/slr_table.h>
@@ -43,6 +44,7 @@ void __init map_txt_mem_regions(void)
     uint32_t evt_log_size;
 
     map_l2(TXT_PRIV_CONFIG_REGS_BASE, NR_TXT_CONFIG_SIZE);
+    map_l2(TPM_TIS_BASE, TPM_TIS_SIZE);
 
     txt_heap_base = read_txt_reg(TXTCR_HEAP_BASE);
     BUG_ON(txt_heap_base == 0);
@@ -52,7 +54,8 @@ void __init map_txt_mem_regions(void)
 
     map_l2(txt_heap_base, txt_heap_size);
 
-    find_evt_log(&evt_log_addr, &evt_log_size);
+    find_evt_log(__va(txt_find_slrt()), &evt_log_addr, &evt_log_size);
+    map_l2((unsigned long)evt_log_addr, evt_log_size);
     if ( evt_log_addr != NULL )
         map_l2((unsigned long)evt_log_addr, evt_log_size);
 }
@@ -75,7 +78,7 @@ void __init protect_txt_mem_regions(void)
     BUG_ON(rc == 0);
 
     /* TXT TPM Event Log */
-    find_evt_log(&evt_log_addr, &evt_log_size);
+    find_evt_log(__va(txt_find_slrt()), &evt_log_addr, &evt_log_size);
     if ( evt_log_addr != NULL ) {
         printk("SLAUNCH: reserving event log (%#lx - %#lx)\n",
                (uint64_t)evt_log_addr,

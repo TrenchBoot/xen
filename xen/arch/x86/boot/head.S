@@ -495,10 +495,13 @@ __start:
         call    txt_early_tests
 
         /*
-         * txt_early_tests() returns MBI address, move it to EBX, move magic
-         * number expected by Multiboot 2 to EAX and fall through.
+         * txt_early_tests() returns MBI address, pass it to tpm_extend_mbi()
+         * and store for later in EBX.
          */
-        movl    %eax,%ebx
+        movl    %eax, %ebx
+        call    tpm_extend_mbi
+
+        /* Move magic number expected by Multiboot 2 to EAX and fall through. */
         movl    $MULTIBOOT2_BOOTLOADER_MAGIC,%eax
 
 .Lmultiboot2_proto:
@@ -844,6 +847,10 @@ END(reloc)
 FUNC_LOCAL(txt_early_tests)
         .incbin "txt_early.bin"
 END(txt_early_tests)
+
+FUNC_LOCAL(tpm_extend_mbi)
+        .incbin "tpm_early.bin"
+END(tpm_extend_mbi)
 
 ENTRY(trampoline_start)
 #include "trampoline.S"
