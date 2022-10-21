@@ -305,4 +305,18 @@ static inline int is_in_pmr(struct txt_os_sinit_data *os_sinit, uint64_t base,
 extern void protect_txt_mem_regions(void);
 extern void txt_restore_mtrrs(bool e820_verbose);
 
+#define DRTM_LOC                2
+#define DRTM_CODE_PCR           17
+#define DRTM_DATA_PCR           18
+
+/* TXT-defined use 0x4xx, TrenchBoot in Linux uses 0x5xx, use 0x6xx here. */
+#define TXT_EVTYPE_MBI          0x600
+#define TXT_EVTYPE_KERNEL       0x601
+#define TXT_EVTYPE_INITRD       0x602
+
+#define SHA1_DIGEST_SIZE        20
+
+void tpm_hash_extend(unsigned loc, unsigned pcr, uint8_t *buf, unsigned size,
+                     uint32_t type, uint8_t *log_data, unsigned log_data_size);
+
 #endif /* __ASSEMBLY__ */
