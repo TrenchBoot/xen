@@ -308,14 +308,10 @@ extern int map_l2(unsigned long paddr, unsigned long size);
 
 /* evt_log is a physical address and the caller must map it to virtual, if
  * needed. */
-static inline void find_evt_log(void **evt_log, uint32_t *evt_log_size)
+static inline void find_evt_log(struct slr_table *slrt, void **evt_log,
+                                uint32_t *evt_log_size)
 {
-    struct txt_os_mle_data *os_mle;
-    struct slr_table *slrt;
     struct slr_entry_log_info *log_info;
-
-    os_mle = txt_os_mle_data_start(_txt(read_txt_reg(TXTCR_HEAP_BASE)));
-    slrt = _txt(os_mle->slrt);
 
     log_info = (struct slr_entry_log_info *)
         slr_next_entry_by_tag(slrt, NULL, SLR_ENTRY_LOG_INFO);
@@ -331,8 +327,29 @@ static inline void find_evt_log(void **evt_log, uint32_t *evt_log_size)
     }
 }
 
+/* Returns physical address. */
+static inline uint32_t txt_find_slrt(void)
+{
+    struct txt_os_mle_data *os_mle =
+        txt_os_mle_data_start(_txt(read_txt_reg(TXTCR_HEAP_BASE)));
+    return os_mle->slrt;
+}
+
 extern void map_txt_mem_regions(void);
 extern void protect_txt_mem_regions(void);
 extern void txt_restore_mtrrs(bool e820_verbose);
+
+#define DRTM_LOC                   2
+#define DRTM_CODE_PCR              17
+#define DRTM_DATA_PCR              18
+
+/*
+ * Secure Launch event log entry type. The TXT specification defines the
+ * base event value as 0x400 for DRTM values.
+ */
+#define TXT_EVTYPE_BASE            0x400
+#define TXT_EVTYPE_SLAUNCH         (TXT_EVTYPE_BASE + 0x102)
+#define TXT_EVTYPE_SLAUNCH_START   (TXT_EVTYPE_BASE + 0x103)
+#define TXT_EVTYPE_SLAUNCH_END     (TXT_EVTYPE_BASE + 0x104)
 
 #endif /* __ASSEMBLY__ */
