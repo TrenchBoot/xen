@@ -777,6 +777,7 @@ int libxl__domain_pvcontrol(libxl__egc *egc, libxl__xswait_state *pvcontrol,
     struct xs_permissions perms[] = {
         { .id = domid, .perms = XS_PERM_NONE },
     };
+    char *feature;
     int rc;
 
     rc = libxl__domain_pvcontrol_available(gc, domid);
@@ -794,6 +795,15 @@ int libxl__domain_pvcontrol(libxl__egc *egc, libxl__xswait_state *pvcontrol,
     t = xs_transaction_start(ctx->xsh);
     if (!t)
         return ERROR_FAIL;
+
+    feature = libxl__xs_read(gc, t, GCSPRINTF("%s/control/feature-%s",
+                                              libxl__xs_get_dompath(gc, domid),
+                                              cmd));
+    if (!feature || strcmp(feature, "1")) {
+        LOGD(ERROR, domid, "PV control '%s' not supported by this domain", cmd);
+        xs_transaction_end(ctx->xsh, t, 1);
+        return ERROR_NOPARAVIRT;
+    }
 
     rc = libxl__xs_printf(gc, t, shutdown_path, "%s", cmd);
     if (rc) {
