@@ -771,7 +771,12 @@ int libxl__domain_pvcontrol(libxl__egc *egc, libxl__xswait_state *pvcontrol,
                             domid_t domid, const char *cmd)
 {
     STATE_AO_GC(pvcontrol->ao);
+    libxl_ctx *ctx = libxl__gc_owner(gc);
     const char *shutdown_path;
+    xs_transaction_t t;
+    struct xs_permissions perms[] = {
+        { .id = domid, .perms = XS_PERM_NONE },
+    };
     int rc;
 
     rc = libxl__domain_pvcontrol_available(gc, domid);
@@ -785,9 +790,28 @@ int libxl__domain_pvcontrol(libxl__egc *egc, libxl__xswait_state *pvcontrol,
     if (!shutdown_path)
         return ERROR_FAIL;
 
-    rc = libxl__xs_printf(gc, XBT_NULL, shutdown_path, "%s", cmd);
-    if (rc)
+ retry_transaction:
+    t = xs_transaction_start(ctx->xsh);
+    if (!t)
+        return ERROR_FAIL;
+
+    rc = libxl__xs_printf(gc, t, shutdown_path, "%s", cmd);
+    if (rc) {
+        xs_transaction_end(ctx->xsh, t, 1);
         return rc;
+    }
+
+    if (!xs_set_permissions(ctx->xsh, t, shutdown_path, perms, ARRAY_SIZE(perms))) {
+        xs_transaction_end(ctx->xsh, t, 1);
+        return ERROR_FAIL;
+    }
+
+    if (!xs_transaction_end(ctx->xsh, t, 0)) {
+        if (errno == EAGAIN)
+            goto retry_transaction;
+        else
+            return ERROR_FAIL;
+    }
 
     pvcontrol->path = shutdown_path;
     pvcontrol->what = GCSPRINTF("guest acknowledgement of %s request", cmd);
