@@ -868,6 +868,9 @@ retry_transaction:
                     GCSPRINTF("%s/data", dom_path),
                     rwperm, ARRAY_SIZE(rwperm));
     libxl__xs_mknod(gc, t,
+                    GCSPRINTF("%s/error", dom_path),
+                    rwperm, ARRAY_SIZE(rwperm));
+    libxl__xs_mknod(gc, t,
                     GCSPRINTF("%s/drivers", dom_path),
                     rwperm, ARRAY_SIZE(rwperm));
     libxl__xs_mknod(gc, t,
