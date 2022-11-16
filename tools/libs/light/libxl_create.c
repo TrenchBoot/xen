@@ -26,6 +26,36 @@
 
 #include <xen-xsm/flask/flask.h>
 
+/* The format of the string is:
+ * domid,aperture_size,gm_size,fence_size. This means we want the vgt
+ * driver to create a vgt instance for Domain domid with the required
+ * parameters. NOTE: aperture_size and gm_size are in MB.
+ */
+static void domcreate_vgt_instance(libxl__gc *gc, uint32_t domid,
+                              libxl_domain_build_info *b_info)
+{
+    const char *path = "/sys/kernel/vgt/control/create_vgt_instance";
+    FILE *vgt_file;
+    int low_gm = b_info->u.hvm.vgt_low_gm_sz ?: 64;
+    int high_gm = b_info->u.hvm.vgt_high_gm_sz ?: 448;
+    int fence = b_info->u.hvm.vgt_fence_sz ?: 4;
+
+    if ((vgt_file = fopen(path, "w")) == NULL) {
+        LOGD(ERROR, domid, "vGT: fopen failed\n");
+        return;
+    }
+
+    LOGD(INFO, domid, "vGT: fprintf %u,%u,%u,%u,-1,0\n",
+		    domid, low_gm, high_gm, fence);
+
+    if (fprintf(vgt_file, "%u,%u,%u,%u,-1,0\n",
+               domid, low_gm, high_gm, fence) < 0)
+        LOGD(ERROR, domid, "vGT: fprintf failed %d\n", errno);
+
+    fclose(vgt_file);
+    return;
+}
+
 int libxl__domain_create_info_setdefault(libxl__gc *gc,
                                          libxl_domain_create_info *c_info,
                                          const libxl_physinfo *info)
@@ -334,6 +364,7 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
                     return ERROR_INVAL;
                 }
                 break;
+            case LIBXL_VGA_INTERFACE_TYPE_XENGT:
             case LIBXL_VGA_INTERFACE_TYPE_CIRRUS:
             default:
                 if (b_info->video_memkb == LIBXL_MEMKB_DEFAULT)
@@ -1830,6 +1861,9 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
         ret = libxl__grant_vga_iomem_permission(gc, domid, d_config);
         if ( ret )
             goto error_out;
+
+	if (d_config->b_info.u.hvm.vga.kind == LIBXL_VGA_INTERFACE_TYPE_XENGT)
+            domcreate_vgt_instance(gc, domid, &d_config->b_info);
 
         return;
     }
