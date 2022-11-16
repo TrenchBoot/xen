@@ -429,6 +429,18 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
             libxl_defbool_setdefault(&b_info->u.hvm.sdl.opengl, false);
         }
 
+        libxl_defbool_setdefault(&b_info->u.hvm.qubes_gui.enable, false);
+        if (libxl_defbool_val(b_info->u.hvm.qubes_gui.enable)) {
+            if (b_info->u.hvm.qubes_gui.domname) {
+                if (libxl__resolve_domid(gc,
+                                         b_info->u.hvm.qubes_gui.domname,
+                                         &b_info->u.hvm.qubes_gui.domid) < 0) {
+                    LOG(ERROR, "Qubes GUI domain not found.");
+                    return ERROR_INVAL;
+                }
+            }
+        }
+
         if (libxl_defbool_val(b_info->u.hvm.spice.enable)) {
             libxl_defbool_setdefault(&b_info->u.hvm.spice.disable_ticketing,
                                      false);

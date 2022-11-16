@@ -1720,6 +1720,13 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
             flexarray_append(dm_args, "-net");
             flexarray_append(dm_args, "none");
         }
+
+        if (libxl_defbool_val(b_info->u.hvm.qubes_gui.enable)) {
+            flexarray_append_pair(dm_args, "-display",
+                                  GCSPRINTF("qubes-gui,domid=%u,log-level=%i",
+                                            b_info->u.hvm.qubes_gui.domid,
+                                            b_info->u.hvm.qubes_gui.log_level));
+        }
     } else {
         if (!sdl && !vnc) {
             flexarray_append(dm_args, "-nographic");
