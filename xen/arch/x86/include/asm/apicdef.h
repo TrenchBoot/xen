@@ -119,6 +119,10 @@
 
 #define MAX_IO_APICS 128
 
+#ifndef __ASSEMBLY__
+
 extern bool x2apic_enabled;
+
+#endif /* !__ASSEMBLY__ */
 
 #endif
