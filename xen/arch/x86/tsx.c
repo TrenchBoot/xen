@@ -18,7 +18,7 @@
  * This option only has any effect on systems presenting a mechanism of
  * controlling TSX behaviour, and where TSX isn't force-disabled by firmware.
  */
-int8_t __read_mostly opt_tsx = -1;
+int8_t __read_mostly opt_tsx = -2;
 bool __read_mostly rtm_disabled;
 
 static int __init cf_check parse_tsx(const char *s)
@@ -201,6 +201,13 @@ void tsx_init(void)
     }
 
     /*
+     * Check bottom bit only.  Higher bits are various sentinels.  Performed
+     * unconditionally so tsx=0 hides guest CPUID bits on HSX/BDX even without
+     * MSRs to enforce the restriction.
+     */
+    rtm_disabled = !(opt_tsx & 1);
+
+    /*
      * Note: MSR_TSX_CTRL is enumerated on TSX-enabled MDS_NO and later parts.
      * MSR_TSX_FORCE_ABORT is enumerated on TSX-enabled pre-MDS_NO Skylake
      * parts only.  The two features are on a disjoint set of CPUs, and not
@@ -225,9 +232,6 @@ void tsx_init(void)
 
         rdmsr(MSR_TSX_CTRL, lo, hi);
 
-        /* Check bottom bit only.  Higher bits are various sentinels. */
-        rtm_disabled = !(opt_tsx & 1);
-
         lo &= ~(TSX_CTRL_RTM_DISABLE | TSX_CTRL_CPUID_CLEAR);
         if ( rtm_disabled )
             lo |= TSX_CTRL_RTM_DISABLE | TSX_CTRL_CPUID_CLEAR;
@@ -243,9 +247,6 @@ void tsx_init(void)
         uint32_t hi, lo;
 
         rdmsr(MSR_TSX_FORCE_ABORT, lo, hi);
-
-        /* Check bottom bit only.  Higher bits are various sentinels. */
-        rtm_disabled = !(opt_tsx & 1);
 
         lo &= ~(TSX_FORCE_ABORT_RTM | TSX_CPUID_CLEAR | TSX_ENABLE_RTM);
 
