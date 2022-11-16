@@ -281,6 +281,12 @@ case "$command" in
         check_device_sharing "$dev" "$mode"
 	write_dev "$dev"
         release_lock "block"
+        # update QubesDB entries
+        if [ -f "/sys/class/block/$(basename $dev)/partition" ]; then
+            udevadm trigger --property-match=DEVNAME=$dev
+        else
+            udevadm trigger --parent-match=/sys/class/block/$(basename $dev)
+        fi
 	exit 0
 	;;
 
@@ -353,8 +359,20 @@ mount it read-write in a guest domain."
 
   remove)
     truetype=$(cat $HOTPLUG_STORE-type || echo $truetype)
+    p=$(cat $HOTPLUG_STORE-params || echo $p)
     case $truetype in
       phy)
+        dev=$(expand_dev $p)
+        if [ -L "$dev" ]
+        then
+          dev=$(readlink -f "$dev") || fatal "$dev link does not exist."
+        fi
+        # update QubesDB entries
+        if [ -f "/sys/class/block/$(basename $dev)/partition" ]; then
+            udevadm trigger --property-match=DEVNAME=$dev
+        else
+            udevadm trigger --parent-match=/sys/class/block/$(basename $dev)
+        fi
 	exit 0
 	;;
 
