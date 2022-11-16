@@ -27,6 +27,7 @@
 #include <asm/div64.h>
 #include <asm/flushtlb.h>
 #include <asm/guest.h>
+#include <asm/intel_txt.h>
 #include <asm/microcode.h>
 #include <asm/msr.h>
 #include <asm/mtrr.h>
@@ -320,6 +321,29 @@ void asmlinkage start_secondary(void *unused)
      */
     unsigned int cpu = booting_cpu;
 
+    if ( ap_boot_method == AP_BOOT_TXT ) {
+        uint64_t misc_enable;
+        uint32_t my_apicid;
+        struct txt_sinit_mle_data *sinit_mle =
+              txt_sinit_mle_data_start(__va(read_txt_reg(TXTCR_HEAP_BASE)));
+
+        /* TXT released us with MONITOR disabled in IA32_MISC_ENABLE. */
+        rdmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
+        wrmsrl(MSR_IA32_MISC_ENABLE,
+               misc_enable | MSR_IA32_MISC_ENABLE_MONITOR_ENABLE);
+
+        /* get_apic_id() reads from x2APIC if it thinks it is enabled. */
+        x2apic_ap_setup();
+        my_apicid = get_apic_id();
+
+        while ( my_apicid != x86_cpu_to_apicid[cpu] ) {
+            asm volatile ("monitor; xor %0,%0; mwait"
+                          :: "a"(__va(sinit_mle->rlp_wakeup_addr)), "c"(0),
+                          "d"(0) : "memory");
+            cpu = booting_cpu;
+        }
+    }
+
     /* Critical region without IDT or TSS.  Any fault is deadly! */
 
     set_current(idle_vcpu[cpu]);
@@ -416,6 +440,33 @@ void asmlinkage start_secondary(void *unused)
     startup_cpu_idle_loop();
 }
 
+static int wake_aps_in_txt(unsigned long trampoline_rm)
+{
+    struct txt_sinit_mle_data *sinit_mle =
+              txt_sinit_mle_data_start(__va(read_txt_reg(TXTCR_HEAP_BASE)));
+    uint32_t *wakeup_addr = __va(sinit_mle->rlp_wakeup_addr);
+
+#define trampoline_relative(x) \
+    (trampoline_rm + ((char *)(x) - trampoline_realmode_entry))
+
+    uint32_t join[4] = {
+        trampoline_gdt[1],                      /* GDT limit */
+        trampoline_relative(trampoline_gdt),    /* GDT base */
+        TXT_AP_BOOT_CS,                         /* CS selector, DS = CS+8 */
+        trampoline_relative(txt_ap_entry)       /* EIP */
+    };
+
+#undef trampoline_relative
+
+    write_txt_reg(TXTCR_MLE_JOIN, __pa(join));
+
+    smp_mb();
+
+    *wakeup_addr = 1;
+
+    return 0;
+}
+
 static int wakeup_secondary_cpu(int phys_apicid, unsigned long start_eip)
 {
     unsigned long send_status = 0, accept_status = 0;
@@ -437,6 +488,9 @@ static int wakeup_secondary_cpu(int phys_apicid, unsigned long start_eip)
      */
     if ( tboot_in_measured_env() && !tboot_wake_ap(phys_apicid, start_eip) )
         return 0;
+
+    if ( ap_boot_method == AP_BOOT_TXT )
+        return wake_aps_in_txt(start_eip);
 
     /*
      * Be paranoid about clearing APIC errors.
@@ -1145,6 +1199,13 @@ static struct notifier_block cpu_smpboot_nfb = {
 
 void __init smp_prepare_cpus(void)
 {
+    /*
+     * If the platform is performing a Secure Launch via TXT, secondary
+     * CPUs (APs) will need to be woken up in a TXT-specific way.
+     */
+    if ( slaunch_active && boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
+        ap_boot_method = AP_BOOT_TXT;
+
     register_cpu_notifier(&cpu_smpboot_nfb);
 
     mtrr_aps_sync_begin();
