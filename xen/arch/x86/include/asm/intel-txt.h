@@ -83,6 +83,11 @@
 #define _txt(x) __va(x)
 #endif
 
+extern char txt_ap_entry[];
+extern uint64_t trampoline_gdt[];
+/* Points at CS selector for TXT, DS selector follows. */
+extern uint64_t trampoline_gdt_txt[];
+
 /*
  * Always use private space as some of registers are either read-only or not
  * present in public space.
