@@ -30,6 +30,7 @@
 #include <asm/flushtlb.h>
 #include <asm/guest.h>
 #include <asm/idt.h>
+#include <asm/intel-txt.h>
 #include <asm/io_apic.h>
 #include <asm/irq-vectors.h>
 #include <asm/mc146818rtc.h>
@@ -38,6 +39,7 @@
 #include <asm/mtrr.h>
 #include <asm/prot-key.h>
 #include <asm/setup.h>
+#include <asm/slaunch.h>
 #include <asm/spec_ctrl.h>
 #include <asm/stubs.h>
 #include <asm/tboot.h>
@@ -239,6 +241,30 @@ static void smp_callin(void)
         cpu_relax();
 }
 
+static int txt_booting_apicid;
+
+void asmlinkage txt_ap_gate(int apicid)
+{
+    uint64_t misc_enable;
+    const struct txt_sinit_mle_data *sinit_mle =
+          txt_start(__va(txt_read(TXTCR_HEAP_BASE)), TXT_SINIT2MLE);
+
+    /* TXT released us with MONITOR disabled in IA32_MISC_ENABLE. */
+    rdmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
+    wrmsrl(MSR_IA32_MISC_ENABLE,
+           misc_enable | MSR_IA32_MISC_ENABLE_MONITOR_ENABLE);
+
+    while ( txt_booting_apicid != apicid )
+    {
+        asm volatile ( "monitor"
+                       :: "a"(__va(sinit_mle->rlp_wakeup_addr)), "c"(0),
+                       "d"(0) : "memory" );
+        if ( txt_booting_apicid == apicid )
+            break;
+        asm volatile ( "mwait" :: "a"(0), "c"(0) );
+    }
+}
+
 /* CPUs for which sibling maps can be computed. */
 static cpumask_t cpu_sibling_setup_map;
 
@@ -417,6 +443,29 @@ void asmlinkage start_secondary(void)
     startup_cpu_idle_loop();
 }
 
+static int wake_ap_in_txt(int phys_apicid)
+{
+    const struct txt_sinit_mle_data *sinit_mle =
+              txt_start(__va(txt_read(TXTCR_HEAP_BASE)), TXT_SINIT2MLE);
+    uint32_t *wakeup_addr = __va(sinit_mle->rlp_wakeup_addr);
+
+    static uint32_t join[4];
+    join[0] = trampoline_gdt[1];            /* GDT limit */
+    join[1] = bootsym_phys(trampoline_gdt); /* GDT base */
+    join[2] = TXT_AP_BOOT_CS;               /* CS selector, DS = CS+8 */
+    join[3] = bootsym_phys(txt_ap_entry);   /* EIP */
+
+    txt_write(TXTCR_MLE_JOIN, __pa(join));
+
+    txt_booting_apicid = phys_apicid;
+
+    smp_mb();
+
+    *wakeup_addr = 1;
+
+    return 0;
+}
+
 static int wakeup_secondary_cpu(int phys_apicid, unsigned long start_eip)
 {
     unsigned long send_status = 0, accept_status = 0;
@@ -438,6 +487,9 @@ static int wakeup_secondary_cpu(int phys_apicid, unsigned long start_eip)
      */
     if ( tboot_in_measured_env() && !tboot_wake_ap(phys_apicid, start_eip) )
         return 0;
+
+    if ( ap_boot_method == AP_BOOT_TXT )
+        return wake_ap_in_txt(phys_apicid);
 
     /*
      * Be paranoid about clearing APIC errors.
@@ -1165,6 +1217,13 @@ static struct notifier_block cpu_smpboot_nfb = {
 
 void __init smp_prepare_cpus(void)
 {
+    /*
+     * If the platform is performing a Secure Launch via TXT, secondary
+     * CPUs (APs) will need to be woken up in a TXT-specific way.
+     */
+    if ( slaunch_active && boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
+        ap_boot_method = AP_BOOT_TXT;
+
     register_cpu_notifier(&cpu_smpboot_nfb);
 
     mtrr_aps_sync_begin();
@@ -1454,6 +1513,12 @@ void __init smp_cpus_done(void)
 
     mtrr_save_state();
     mtrr_aps_sync_end();
+
+    /*
+     * After the initial startup the DRTM-specific method for booting APs
+     * should no longer be used unless DRTM sequence is started again.
+     */
+    ap_boot_method = AP_BOOT_NORMAL;
 }
 
 void __init smp_intr_init(void)

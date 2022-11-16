@@ -66,6 +66,9 @@
 #define SLAUNCH_ERROR_BAD_VENDOR_INFO   0xc000800AU
 #define SLAUNCH_ERROR_BAD_SLRT_ADDRESS  0xc000800BU
 
+#define TXT_AP_BOOT_CS                  0x0030
+#define TXT_AP_BOOT_DS                  0x0038
+
 #ifndef __ASSEMBLER__
 
 #include <xen/multiboot2.h>
@@ -82,6 +85,9 @@
 #include <asm/page.h>   /* __va() */
 #define _txt(x) __va(x)
 #endif
+
+extern char txt_ap_entry[];
+extern uint32_t trampoline_gdt[];
 
 /*
  * Always use private space as some of registers are either read-only or not

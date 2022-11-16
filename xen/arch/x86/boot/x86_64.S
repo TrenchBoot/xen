@@ -30,7 +30,10 @@ ENTRY(__high_start)
         cmp     %esp, (%rcx, %rax, 4)
         jne     1b
 
-        /* %eax is now Xen CPU index. */
+        mov     %esp, %edx
+
+        /* %eax is now Xen CPU index, %edx is APIC ID. */
+
         lea     stack_base(%rip), %rcx
         mov     (%rcx, %rax, 8), %rsp
 
@@ -39,6 +42,25 @@ ENTRY(__high_start)
         hlt
 1:
         add     $(STACK_SIZE - CPUINFO_sizeof), %rsp
+
+        /*
+         * TXT AP gate.
+         *
+         * In TXT boot, SINIT releases all APs at once and they race into
+         * __high_start in parallel. We serialize APs initialization here
+         * to force them waking up in order expected by the BSP.
+         *
+         * The gate must be placed before STACK_CPUINFO_FIELD(cr4) is written
+         * below: for each AP, the BSP memsets that AP's cpu_info struct in
+         * cpu_smpboot_alloc() just before releasing it through the gate, so
+         * anything written earlier would be clobbered.
+         *
+         * In non-TXT boot, APs wake one-by-one via SIPI.
+         */
+        cmpl    $ASM_AP_BOOT_TXT, ap_boot_method(%rip)
+        jne     .L_after_stack_setup
+        mov     %edx, %edi
+        call    txt_ap_gate
 
 .L_after_stack_setup:
 

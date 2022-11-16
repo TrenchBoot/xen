@@ -245,4 +245,7 @@ void __dummy__(void)
     DEFINE(SL_EIR_size,     sizeof(struct slaunch_early_init_results));
     BLANK();
 #endif
+
+    DEFINE(ASM_AP_BOOT_TXT, AP_BOOT_TXT);
+    BLANK();
 }
