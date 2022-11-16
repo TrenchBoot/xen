@@ -182,7 +182,8 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
         /* Check HVM direct boot parameters, we should honour ->ramdisk and
          * ->cmdline iff ->kernel is set.
          */
-        if (!b_info->kernel && (b_info->ramdisk || b_info->cmdline)) {
+        if (!b_info->kernel && (b_info->ramdisk || (b_info->cmdline &&
+            !libxl_defbool_val(b_info->device_model_stubdomain)))) {
             LOG(ERROR, "direct boot parameters specified but kernel missing");
             return ERROR_INVAL;
         }
