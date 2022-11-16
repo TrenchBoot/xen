@@ -7,6 +7,7 @@
 #include <asm/page.h>
 #include <asm/processor.h>
 #include <asm/msr-index.h>
+#include <asm/apicdef.h>
 #include <asm/cpufeature.h>
 #include <public/elfnote.h>
 
