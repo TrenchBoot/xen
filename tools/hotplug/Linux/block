@@ -3,6 +3,8 @@
 dir=$(dirname "$0")
 . "$dir/block-common.sh"
 
+HOTPLUG_STORE="/run/xen-hotplug/${XENBUS_PATH//\//-}"
+
 expand_dev() {
   local dev
   case $1 in
@@ -256,6 +258,9 @@ case "$command" in
       # script to be called twice, so just bail.
       exit 0
     fi
+    echo $p > "$HOTPLUG_STORE-params"
+    echo $mode > "$HOTPLUG_STORE-mode"
+    echo $truetype > "$HOTPLUG_STORE-type"
 
     FRONTEND_ID=$(xenstore_read "$XENBUS_PATH/frontend-id")
     FRONTEND_UUID=$(xenstore_read_default \
@@ -332,6 +337,7 @@ mount it read-write in a guest domain."
         fi
         do_or_die losetup $roflag "$loopdev" "$file"
         xenstore_write "$XENBUS_PATH/node" "$loopdev"
+        echo $loopdev > "$HOTPLUG_STORE-node"
         write_dev "$loopdev"
         release_lock "block"
         exit 0
@@ -346,6 +352,7 @@ mount it read-write in a guest domain."
     ;;
 
   remove)
+    truetype=$(cat $HOTPLUG_STORE-type || echo $truetype)
     case $truetype in
       phy)
 	exit 0
@@ -353,8 +360,8 @@ mount it read-write in a guest domain."
 
       file)
         claim_lock "block"
-        node=$(xenstore_read "$XENBUS_PATH/node")
-	losetup -d "$node"
+        node=$(cat "$HOTPLUG_STORE-node")
+        losetup -d "$node"
         release_lock "block"
 	exit 0
 	;;
