@@ -2583,7 +2583,7 @@ static void spawn_stub_launch_dm(libxl__egc *egc,
      * Until xenconsoled learns how to handle multiple consoles, require qemu
      * in dom0 to serve consoles for a stubdomain - it require at least 3 of them.
      */
-    need_qemu = 1 || libxl__need_xenpv_qemu(gc, &sdss->dm_config);
+    need_qemu = libxl__need_xenpv_qemu(gc, &sdss->dm_config);
 
     for (i = 0; i < num_console; i++) {
         libxl__device device;
@@ -2720,7 +2720,7 @@ static void qmp_proxy_spawn_outcome(libxl__egc *egc,
      * Until xenconsoled learns how to handle multiple consoles, require qemu
      * in dom0 to serve consoles for a stubdomain - it require at least 3 of them.
      */
-    int need_pvqemu = 1 || libxl__need_xenpv_qemu(gc, &sdss->dm_config);
+    int need_pvqemu = libxl__need_xenpv_qemu(gc, &sdss->dm_config);
 
     if (rc) goto out;
 
