@@ -1512,6 +1512,17 @@ static void pci_add_dm_done(libxl__egc *egc,
             rc = ERROR_FAIL;
             goto out;
         }
+    } else if (libxl_is_stubdom(ctx, domid, NULL)) {
+        /* Allow acces to MSI enable flag in PCI config space for the stubdom */
+        if ( sysfs_write_bdf(gc, SYSFS_PCIBACK_DRIVER"/allow_interrupt_control",
+                             pci) < 0 ) {
+            if ( sysfs_write_bdf(gc, SYSFS_PCIBACK_DRIVER"/allow_msi_enable",
+                                 pci) < 0 ) {
+                LOGD(ERROR, domainid, "Setting allow_msi_enable for device");
+                rc = ERROR_FAIL;
+                goto out;
+            }
+        }
     }
 
 out_no_irq:
