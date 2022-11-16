@@ -15,7 +15,38 @@ ENTRY(__high_start)
         mov     $XEN_MINIMAL_CR4,%rcx
         mov     %rcx,%cr4
 
-        mov     stack_start(%rip),%rsp
+        test    %ebx, %ebx
+        cmovz   stack_start(%rip), %rsp
+        jz      .L_stack_set
+
+        /* APs only: get stack base from APIC ID saved in %esp. */
+        xor     %ebx, %ebx
+        lea     smpboot_data(%rip), %rcx
+        /* smpboot_data[0] is BSP, skip it. */
+1:
+        add     $1, %ebx
+        add     $SMPBOOT_DATA_sizeof, %rcx
+        cmp     $NR_CPUS, %ebx
+        jb      2f
+        hlt
+2:
+        cmp     %esp, SMPBOOT_DATA_apicid(%rcx)
+        jne     1b
+
+        /*
+         * At this point:
+         * - %rcx is &smpboot_data[cpu], read stack base from it,
+         * - %ebx (callee-save) is Xen cpu number, pass it to start_secondary().
+         */
+        mov     SMPBOOT_DATA_stack_base(%rcx), %rsp
+
+        test    %rsp, %rsp
+        jnz     3f
+        hlt
+3:
+        add     $(STACK_SIZE - CPUINFO_sizeof), %rsp
+
+.L_stack_set:
 
         /* Reset EFLAGS (subsumes CLI and CLD). */
         pushq   $0
@@ -74,6 +105,7 @@ ENTRY(__high_start)
 .L_ap_cet_done:
 #endif /* CONFIG_XEN_SHSTK || CONFIG_XEN_IBT */
 
+        mov     %ebx, %edi
         tailcall start_secondary
 
 .L_bsp:

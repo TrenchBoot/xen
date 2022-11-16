@@ -151,7 +151,7 @@ unsigned long __read_mostly xen_phys_start;
 char asmlinkage __section(".init.bss.stack_aligned") __aligned(STACK_SIZE)
     cpu0_stack[STACK_SIZE];
 
-/* Used by the BSP/AP paths to find the higher half stack mapping to use. */
+/* Used by the BSP path to find the higher half stack mapping to use. */
 void *stack_start = cpu0_stack + STACK_SIZE - sizeof(struct cpu_info);
 
 /* Used by the boot asm to stash the relocated multiboot info pointer. */

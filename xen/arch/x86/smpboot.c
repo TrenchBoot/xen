@@ -218,8 +218,6 @@ static void smp_callin(void)
         cpu_relax();
 }
 
-static int booting_cpu;
-
 /* CPUs for which sibling maps can be computed. */
 static cpumask_t cpu_sibling_setup_map;
 
@@ -307,15 +305,14 @@ static void set_cpu_sibling_map(unsigned int cpu)
     }
 }
 
-void asmlinkage start_secondary(void *unused)
+void asmlinkage start_secondary(unsigned int cpu)
 {
     struct cpu_info *info = get_cpu_info();
 
     /*
-     * Dont put anything before smp_callin(), SMP booting is so fragile that we
+     * Don't put anything before smp_callin(), SMP booting is so fragile that we
      * want to limit the things done here to the most necessary things.
      */
-    unsigned int cpu = booting_cpu;
 
     /* Critical region without IDT or TSS.  Any fault is deadly! */
 
@@ -572,8 +569,6 @@ static int do_boot_cpu(unsigned int apicid, int cpu)
      */
     mtrr_save_state();
 
-    booting_cpu = cpu;
-
     start_eip = bootsym_phys(trampoline_realmode_entry);
 
     /* start_eip needs be page aligned, and below the 1M boundary. */
@@ -584,9 +579,6 @@ static int do_boot_cpu(unsigned int apicid, int cpu)
     if ( opt_cpu_info )
         printk("Booting processor %d/%d eip %lx\n",
                cpu, apicid, start_eip);
-
-    stack_start = smpboot_data[cpu].stack_base +
-        STACK_SIZE - sizeof(struct cpu_info);
 
     /* This grunge runs the startup process for the targeted processor. */
 
