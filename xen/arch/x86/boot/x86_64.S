@@ -11,7 +11,36 @@ ENTRY(__high_start)
         mov     %ecx,%gs
         mov     %ecx,%ss
 
-        mov     stack_start(%rip),%rsp
+        /* %ebx is set to non-zero in trampoline.S to indicate an AP. */
+        test    %ebx, %ebx
+        cmovz   stack_start(%rip), %rsp
+        jz      .L_after_stack_setup
+
+        /*
+         * APs only: get stack base from APIC ID saved in %esp in trampoline.S.
+         */
+        mov     $-1, %rax
+        lea     x86_cpu_to_apicid(%rip), %rcx
+1:
+        add     $1, %rax
+        cmp     $NR_CPUS, %eax
+        jb      2f
+        hlt
+2:
+        cmp     %esp, (%rcx, %rax, 4)
+        jne     1b
+
+        /* %eax is now Xen CPU index. */
+        lea     stack_base(%rip), %rcx
+        mov     (%rcx, %rax, 8), %rsp
+
+        test    %rsp, %rsp
+        jnz     1f
+        hlt
+1:
+        add     $(STACK_SIZE - CPUINFO_sizeof), %rsp
+
+.L_after_stack_setup:
 
         /* Reset EFLAGS (subsumes CLI and CLD). */
         pushq   $0
