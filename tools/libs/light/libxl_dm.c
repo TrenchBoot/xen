@@ -1364,7 +1364,7 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
             if (disks[i].is_cdrom) {
                 continue;
             }
-            if (strncmp(disks[i].vdev, "sd", 2) == 0) {
+            if (strncmp(disks[i].vdev, "sd", 2) == 0 || !disks[i].readwrite) {
                 flexarray_vappend(dm_args, "-device", "lsi53c895a", NULL);
                 break;
             }
@@ -1953,7 +1953,7 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
                     colo_mode = LIBXL__COLO_NONE;
                 }
 
-                if (strncmp(disks[i].vdev, "sd", 2) == 0) {
+                if (strncmp(disks[i].vdev, "sd", 2) == 0 || !disks[i].readwrite) {
                     const char *drive_id;
                     if (colo_mode == LIBXL__COLO_SECONDARY) {
                         drive = libxl__sprintf
