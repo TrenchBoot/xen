@@ -71,6 +71,29 @@ trampoline_protmode_entry:
         mov     $X86_CR4_PAE,%ecx
         mov     %ecx,%cr4
 
+        /*
+         * Get APIC ID while we're in non-paged mode to later derive Xen CPU
+         * index and determine CPU-specific stack. Start by checking if x2APIC
+         * is enabled.
+         */
+        mov     $MSR_APIC_BASE, %ecx
+        rdmsr
+        test    $APIC_BASE_EXTD, %eax
+        jnz     .Lx2apic
+
+        /* Not x2APIC, read APIC ID from MMIO. */
+        and     $APIC_BASE_ADDR_MASK, %eax
+        mov     APIC_ID(%eax), %eax
+        shr     $24, %eax
+        jmp     1f
+
+.Lx2apic:
+        mov     $(MSR_X2APIC_FIRST + (APIC_ID >> MSR_X2APIC_SHIFT)), %ecx
+        rdmsr
+1:
+        /* The value of the APIC ID will be consumed in __high_start. */
+        mov     %eax, %ebp
+
         /* Load pagetable base register. */
         mov     $sym_offs(idle_pg_table),%eax
         add     bootsym_rel(trampoline_xen_phys_start,4,%eax)
