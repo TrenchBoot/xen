@@ -592,15 +592,14 @@ static UINTN __initdata esrt = EFI_INVALID_TABLE_ADDR;
 
 static size_t __init get_esrt_size(const EFI_MEMORY_DESCRIPTOR *desc)
 {
-    size_t available_len, len;
+    UINT64 available_len, len = efi_memory_descriptor_len(desc);
     const UINTN physical_start = desc->PhysicalStart;
     const EFI_SYSTEM_RESOURCE_TABLE *esrt_ptr;
 
-    len = desc->NumberOfPages << EFI_PAGE_SHIFT;
     if ( esrt == EFI_INVALID_TABLE_ADDR )
-        return 0;
+        return 0; /* invalid ESRT */
     if ( physical_start > esrt || esrt - physical_start >= len )
-        return 0;
+        return 0; /* ESRT not in this memory region */
     /*
      * The specification requires EfiBootServicesData, but also accept
      * EfiRuntimeServicesData (for compatibility with buggy firmware)
@@ -1688,7 +1687,7 @@ void __init efi_init_memory(void)
     for ( i = 0; i < efi_memmap_size; i += efi_mdesc_size )
     {
         EFI_MEMORY_DESCRIPTOR *desc = efi_memmap + i;
-        u64 len = desc->NumberOfPages << EFI_PAGE_SHIFT;
+        uint64_t len = efi_memory_descriptor_len(desc);
         unsigned long smfn, emfn;
         unsigned int prot = PAGE_HYPERVISOR_RWX;
 
@@ -1705,6 +1704,16 @@ void __init efi_init_memory(void)
             l1tf_safe_maddr =
                 max(l1tf_safe_maddr,
                     ROUNDUP(desc->PhysicalStart + len, PAGE_SIZE));
+        }
+
+        if ( len == 0 )
+        {
+            printk(XENLOG_ERR "BAD EFI MEMORY DESCRIPTOR: "
+                   "PhysicalStart=%016" PRIx64 " NumberOfPages=%016" PRIx64
+                   " type=%" PRIu32 " attr=%016" PRIx64 "\n",
+                   desc->PhysicalStart, desc->NumberOfPages,
+                   desc->Type, desc->Attribute);
+            continue;
         }
 
         if ( !efi_enabled(EFI_RS) )
