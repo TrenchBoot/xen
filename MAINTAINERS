@@ -512,6 +512,11 @@ M:	Wei Liu <wl@xen.org>
 S:	Supported
 T:	git https://xenbits.xenproject.org/git-http/seabios.git
 
+SECURITY HARDWARE DRIVERS
+M:	Daniel P. Smith <dpsmith@apertussolutions.com>
+S:	Maintained
+F:	xen/drivers/security/
+
 STUB DOMAINS
 M:	Samuel Thibault <samuel.thibault@ens-lyon.org>
 S:	Supported

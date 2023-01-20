@@ -1,0 +1,8 @@
+
+config SECURITY_DEVICES
+	bool "Security Devices (UNSUPPORTED)" if UNSUPPORTED
+	default n
+	---help---
+	  Enable Xen to manage and use platform security hardware.
+
+	  Say Y here if your platform has security hardware.
