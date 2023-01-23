@@ -1,0 +1,3 @@
+obj-y += tpm.o
+obj-y += tpm_12.o
+obj-y += tpm_20.o
