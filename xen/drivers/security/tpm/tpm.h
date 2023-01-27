@@ -44,13 +44,15 @@
 /* un-comment to enable detailed command tracing */
 //#define TPM_TRACE
 
+#define TPM_NR_PCRS             24
+
 #define TPM_IF_12 0
 #define TPM_IF_20_FIFO 1
 #define TPM_IF_20_CRB 2
 
 #define TPM_VER_UNKNOWN 0
-#define TPM_VER_12 1
-#define TPM_VER_20 2
+#define TPM_VER_12 0x0102
+#define TPM_VER_20 0x0200
 
 #define TPM_INTERFACE_ID_FIFO_20   0x0
 #define TPM_INTERFACE_ID_CRB       0x1
@@ -200,7 +202,7 @@ typedef union {
         uint8_t data_avail      : 1;  /* RO, 0=no more data for response */
         uint8_t tpm_go          : 1;  /* WO, 1=execute sent command */
         uint8_t command_ready   : 1;  /* RW, 1=TPM ready to receive new cmd */
-        uint8_t sts_valid       : 1;  /* RO, 1=data_avail and expect bits are  valid */
+        uint8_t sts_valid       : 1;  /* RO, 1=data_avail; valid expect bits */
         uint16_t burst_count    : 16; /* RO, # read/writes bytes before wait */
     };
 } tpm12_reg_sts_t;
@@ -215,8 +217,7 @@ typedef union {
         uint8_t data_avail      : 1;  /* RO, 0=no more data for response */
         uint8_t tpm_go          : 1;  /* WO, 1=execute sent command */
         uint8_t command_ready   : 1;  /* RW, 1=TPM ready to receive new cmd */
-        uint8_t sts_valid       : 1;  /* RO, 1=data_avail and expect bits are
-                                    valid */
+        uint8_t sts_valid       : 1;  /* RO, 1=data_avail; valid expect bits */
         uint16_t burst_count    : 16; /* RO, # read/writes bytes before wait */
         /* version >= 2 */
         uint8_t command_cancel       : 1;
@@ -438,44 +439,16 @@ typedef hash_t tpm_digest_t;
 typedef tpm_digest_t tpm_pcr_value_t;
 
 struct tpm_if;
-struct tpm_if_fp;
 
-struct tpm_if {
-#define TPM12_VER_MAJOR   1
-#define TPM12_VER_MINOR   2
-#define TPM20_VER_MAJOR   2
-#define TPM20_VER_MINOR   0
-    uint8_t major;
-    uint8_t minor;
-    uint16_t family;
-
-    tpm_timeout_t timeout;
-
-    uint32_t error; /* last reported error */
-    uint32_t cur_loc;
-
-    uint16_t banks;
-    uint16_t algs_banks[TPM_ALG_MAX_NUM];
-    uint16_t alg_count;
-    uint16_t algs[TPM_ALG_MAX_NUM];
-
-    /*
-     * Only for version>=2. PCR extend policy.
-     */
-#define TPM_EXTPOL_AGILE         0  // deprecated
-#define TPM_EXTPOL_EMBEDDED      1
-#define TPM_EXTPOL_FIXED         2
-    uint8_t extpol;
-    uint16_t cur_alg;
-
-    /* NV index to be used */
-    uint32_t lcp_own_index;
-    uint32_t tb_policy_index;
-    uint32_t tb_err_index;
-    uint32_t sgx_svn_index;
+struct tpm_hw_if {
+    bool (*request_locality)(uint32_t locality);
+    bool (*validate_locality)(uint32_t locality);
+    bool (*release_locality)(uint32_t locality);
+    bool (*submit_cmd)(uint32_t locality, uint8_t *in, u32 in_size, u8 *out,
+                    u32 *out_size);
 };
 
-struct tpm_if_fp {
+struct tpm_cmd_if {
 
     bool (*init)(struct tpm_if *ti);
 
@@ -525,30 +498,56 @@ struct tpm_if_fp {
     bool (*check)(void);
 };
 
-extern const struct tpm_if_fp tpm_12_if_fp;
-extern const struct tpm_if_fp tpm_20_if_fp;
-extern uint8_t g_tpm_ver;
-extern uint8_t g_tpm_family;
+struct tpm_if {
+#define TPM12_VER_MAJOR   1
+#define TPM12_VER_MINOR   2
+#define TPM20_VER_MAJOR   2
+#define TPM20_VER_MINOR   0
+    union {
+        uint16_t version;
+        struct {
+            uint8_t major;
+            uint8_t minor;
+        };
+    } version;
+    uint16_t family;
 
-bool tpm_validate_locality(uint32_t locality);
-bool tpm_validate_locality_crb(uint32_t locality);
-bool release_locality(uint32_t locality);
-bool prepare_tpm(void);
+    tpm_timeout_t timeout;
+
+    uint32_t error; /* last reported error */
+    uint32_t cur_loc;
+
+    uint16_t banks;
+    uint16_t algs_banks[TPM_ALG_MAX_NUM];
+    uint16_t alg_count;
+    uint16_t algs[TPM_ALG_MAX_NUM];
+
+    /*
+     * Only for version>=2. PCR extend policy.
+     */
+#define TPM_EXTPOL_AGILE         0  // deprecated
+#define TPM_EXTPOL_EMBEDDED      1
+#define TPM_EXTPOL_FIXED         2
+    uint8_t extpol;
+    uint16_t cur_alg;
+
+    /* NV index to be used */
+    uint32_t lcp_own_index;
+    uint32_t tb_policy_index;
+    uint32_t tb_err_index;
+    uint32_t sgx_svn_index;
+
+    const struct tpm_hw_if *hw;
+    const struct tpm_cmd_if *cmds;
+};
+
+extern const struct tpm_cmd_if tpm_12_cmds;
+extern const struct tpm_cmd_if tpm_20_cmds;
+
+void mmio_detect_interface(struct tpm_if *tpm);
 bool tpm_detect(void);
 void tpm_print(struct tpm_if *ti);
-bool tpm_submit_cmd(
-    uint32_t locality, uint8_t *in, uint32_t in_size, uint8_t *out,
-    uint32_t *out_size);
-bool tpm_submit_cmd_crb(
-    uint32_t locality, uint8_t *in, uint32_t in_size, uint8_t *out,
-    uint32_t *out_size);
-bool tpm_wait_cmd_ready(uint32_t locality);
-bool tpm_request_locality_crb(uint32_t locality);
-bool tpm_relinquish_locality_crb(uint32_t locality);
-bool txt_is_launched(void);
-bool tpm_workaround_crb(void);
 struct tpm_if *get_tpm(void);
-const struct tpm_if_fp *get_tpm_fp(void);
 
 
 //#define TPM_UNIT_TEST 1

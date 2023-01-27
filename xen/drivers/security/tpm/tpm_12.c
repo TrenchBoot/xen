@@ -142,6 +142,7 @@ static uint32_t _tpm12_submit_cmd(
     uint32_t locality, uint16_t tag, uint32_t cmd,  uint32_t arg_size,
     uint32_t *out_size)
 {
+    struct tpm_if *tpm = get_tpm();
     uint32_t ret;
     uint32_t cmd_size, rsp_size = 0;
 
@@ -172,7 +173,7 @@ static uint32_t _tpm12_submit_cmd(
 
     rsp_size = RSP_HEAD_SIZE + *out_size;
     rsp_size = (rsp_size > TPM_RSP_SIZE_MAX) ? TPM_RSP_SIZE_MAX: rsp_size;
-    if ( !tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size) )
+    if ( !tpm->hw->submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size) )
         return TPM_FAIL;
 
     /*
@@ -1727,7 +1728,7 @@ static bool cf_check tpm12_init(struct tpm_if *ti)
     ti->cur_loc = 0;
 
     locality = ti->cur_loc;
-    if ( !tpm_validate_locality(locality) )
+    if ( !ti->hw->validate_locality(locality) )
     {
         printk(XENLOG_WARNING"TPM is not available.\n");
         return false;
@@ -1816,8 +1817,8 @@ static bool cf_check tpm12_init(struct tpm_if *ti)
     }
 
     /* init version */
-    ti->major = TPM12_VER_MAJOR;
-    ti->minor = TPM12_VER_MINOR;
+    ti->version.major = TPM12_VER_MAJOR;
+    ti->version.minor = TPM12_VER_MINOR;
 
     /* init supported alg list */
     ti->banks = 1;
@@ -1980,7 +1981,7 @@ static bool cf_check tpm12_check(void)
     return ( ret == TPM_BAD_ORDINAL );
 }
 
-const struct tpm_if_fp tpm_12_if_fp = {
+const struct tpm_cmd_if tpm_12_cmds = {
     .init = tpm12_init,
     .pcr_read = tpm12_pcr_read,
     .pcr_extend = tpm12_pcr_extend,

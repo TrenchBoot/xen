@@ -1122,18 +1122,11 @@ static bool reverse_copy_context_out(TPMS_CONTEXT *context, void **other)
     return true;
 }
 
-static uint32_t _tpm20_pcr_read(
-    uint32_t locality, tpm_pcr_read_in *in, tpm_pcr_read_out *out)
+static uint32_t _tpm20_send_cmd(void *other, uint32_t locality, uint32_t rsp_size)
 {
+    struct tpm_if *tpm = get_tpm();
+    uint32_t cmd_size;
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
-    uint16_t rsp_tag;
-    void *other;
-
-    reverse_copy_header(TPM_CC_PCR_Read, 0);
-
-    other = (void *)cmd_buf + CMD_HEAD_SIZE;
-    reverse_copy_pcr_selection_in(&other, &in->pcr_selection);
 
     /*
      * Now set the command size field, now that we know the size of the whole
@@ -1142,21 +1135,27 @@ static uint32_t _tpm20_pcr_read(
     cmd_size = (uint8_t *)other - cmd_buf;
     reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
 
-    rsp_size = sizeof(*out);
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
+    if ( !tpm->hw->submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
+        return TPM_RC_FAILURE;
 
     reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+
+    return ret;
+}
+
+static uint32_t _tpm20_pcr_read(
+    uint32_t locality, tpm_pcr_read_in *in, tpm_pcr_read_out *out)
+{
+    uint32_t ret;
+    uint16_t rsp_tag;
+    void *other;
+
+    reverse_copy_header(TPM_CC_PCR_Read, 0);
+
+    other = (void *)cmd_buf + CMD_HEAD_SIZE;
+    reverse_copy_pcr_selection_in(&other, &in->pcr_selection);
+
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -1181,7 +1180,6 @@ static uint32_t _tpm20_pcr_extend(
     uint32_t locality, tpm_pcr_extend_in *in, tpm_pcr_extend_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
 
@@ -1194,28 +1192,7 @@ static uint32_t _tpm20_pcr_extend(
 
     reverse_copy_digest_value_in(&other, &in->digests);
 
-    /*
-    * Now set the command size field, now that we know the size of the whole
-    * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = sizeof(*out);
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -1234,7 +1211,6 @@ static uint32_t _tpm20_pcr_event(
     uint32_t locality, tpm_pcr_event_in *in, tpm_pcr_event_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
 
@@ -1247,28 +1223,7 @@ static uint32_t _tpm20_pcr_event(
 
     other += reverse_copy_sized_buf_in((TPM2B *)other, (TPM2B *)&(in->data));
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = sizeof(*out);
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -1291,7 +1246,6 @@ static uint32_t _tpm20_pcr_reset(
     uint32_t locality, tpm_pcr_reset_in *in, tpm_pcr_reset_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
 
@@ -1303,27 +1257,7 @@ static uint32_t _tpm20_pcr_reset(
     other += sizeof(uint32_t);
     reverse_copy_sessions_in(&other, &in->sessions);
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = sizeof(*out);
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -1343,7 +1277,6 @@ static uint32_t _tpm20_sequence_start(
     uint32_t locality, tpm_sequence_start_in *in, tpm_sequence_start_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
 
@@ -1354,27 +1287,7 @@ static uint32_t _tpm20_sequence_start(
 
     reverse_copy_in(other, in->hash_alg);
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = RSP_HEAD_SIZE + sizeof(*out);
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -1392,7 +1305,6 @@ static uint32_t _tpm20_sequence_update(
     uint32_t locality, tpm_sequence_update_in *in, tpm_sequence_update_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
 
@@ -1406,27 +1318,7 @@ static uint32_t _tpm20_sequence_update(
 
     other += reverse_copy_sized_buf_in((TPM2B *)other, (TPM2B *)&(in->buf));
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = sizeof(*out);
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -1446,7 +1338,6 @@ static uint32_t _tpm20_sequence_complete(
     uint32_t locality, tpm_sequence_complete_in *in, tpm_sequence_complete_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
 
@@ -1461,27 +1352,7 @@ static uint32_t _tpm20_sequence_complete(
 
     other += reverse_copy_sized_buf_in((TPM2B *)other, (TPM2B *)&(in->buf));
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = sizeof(*out);
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -1504,7 +1375,6 @@ static uint32_t _tpm20_nv_read(
     uint32_t locality, tpm_nv_read_in *in, tpm_nv_read_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
     uint16_t size;
@@ -1520,28 +1390,7 @@ static uint32_t _tpm20_nv_read(
     reverse_copy_in(other, in->size);
     reverse_copy_in(other, in->offset);
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = sizeof(rsp_buf);
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -1567,7 +1416,6 @@ static uint32_t _tpm20_nv_write(
     uint32_t locality, tpm_nv_write_in *in, tpm_nv_write_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
 
@@ -1583,25 +1431,7 @@ static uint32_t _tpm20_nv_write(
 
     reverse_copy_in(other, in->offset);
 
-    /* Now set the command size field, now that we know the size of the whole command */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = sizeof(*out);
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -1621,7 +1451,6 @@ static uint32_t _tpm20_nv_read_public(
     uint32_t locality, tpm_nv_read_public_in *in, tpm_nv_read_public_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
     uint16_t size;
@@ -1631,28 +1460,7 @@ static uint32_t _tpm20_nv_read_public(
     other = (void *)cmd_buf + CMD_HEAD_SIZE;
     reverse_copy_in(other, in->index);
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = sizeof(*out);
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -1691,7 +1499,6 @@ static uint32_t _tpm20_get_random(
     uint32_t locality, tpm_get_random_in *in, tpm_get_random_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
     uint16_t size;
@@ -1701,28 +1508,7 @@ static uint32_t _tpm20_get_random(
     other = (void *)cmd_buf + CMD_HEAD_SIZE;
     reverse_copy_in(other, in->bytes_req);
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = sizeof(*out);
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -1743,8 +1529,6 @@ static uint32_t _tpm20_get_random(
 
 static uint32_t _tpm20_shutdown(uint32_t locality, uint16_t type)
 {
-    uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     void *other;
 
     reverse_copy_header(TPM_CC_Shutdown, 0);
@@ -1752,29 +1536,7 @@ static uint32_t _tpm20_shutdown(uint32_t locality, uint16_t type)
     other = (void *)cmd_buf + CMD_HEAD_SIZE;
     reverse_copy_in(other, type);
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = RSP_HEAD_SIZE;
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
-    return ret;
+    return _tpm20_send_cmd(other, locality, RSP_HEAD_SIZE);
 }
 
 uint32_t handle2048 = 0;
@@ -1784,7 +1546,6 @@ static uint32_t _tpm20_create_primary(
     uint32_t locality, tpm_create_primary_in *in, tpm_create_primary_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     uint16_t sensitive_size;
     void *sensitive_size_ptr;
@@ -1819,28 +1580,7 @@ static uint32_t _tpm20_create_primary(
     /* Copy creationPCR */
     reverse_copy_pcr_selection_in(&other, &in->creation_pcr);
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = sizeof(*out);
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -1893,7 +1633,6 @@ static uint32_t _tpm20_create(
     uint32_t locality, tpm_create_in *in, tpm_create_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     uint16_t sensitive_size;
     void *sensitive_size_ptr;
@@ -1927,28 +1666,7 @@ static uint32_t _tpm20_create(
     /* Copy creationPCR */
     reverse_copy_pcr_selection_in(&other, &in->creation_pcr);
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = sizeof(rsp_buf);
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -1995,7 +1713,6 @@ static uint32_t _tpm20_load(
     uint32_t locality, tpm_load_in *in, tpm_load_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
     uint16_t size;
@@ -2011,28 +1728,7 @@ static uint32_t _tpm20_load(
 
     reverse_copy_public_in(&other, &in->public);
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = sizeof(*out);
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                 &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -2061,7 +1757,6 @@ static uint32_t _tpm20_unseal(
     uint32_t locality, tpm_unseal_in *in, tpm_unseal_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
     uint16_t size;
@@ -2073,28 +1768,7 @@ static uint32_t _tpm20_unseal(
 
     reverse_copy_sessions_in(&other, &in->sessions);
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = sizeof(*out);
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -2121,7 +1795,6 @@ static uint32_t _tpm20_context_save(
     uint32_t locality, tpm_contextsave_in *in, tpm_contextsave_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
 
@@ -2129,28 +1802,7 @@ static uint32_t _tpm20_context_save(
     other = (void *)cmd_buf + CMD_HEAD_SIZE;
     reverse_copy_in(other, in->saveHandle);
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = sizeof(*out);
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -2171,7 +1823,6 @@ static uint32_t _tpm20_context_load(
     uint32_t locality, tpm_contextload_in *in, tpm_contextload_out *out)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
 
@@ -2180,28 +1831,7 @@ static uint32_t _tpm20_context_load(
 
     reverse_copy_context_in(&other, &in->context);
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = RSP_HEAD_SIZE + sizeof(*out);
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-	    return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
+    ret = _tpm20_send_cmd(other, locality, sizeof(*out));
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -2219,7 +1849,6 @@ static uint32_t _tpm20_context_load(
 static uint32_t _tpm20_context_flush(uint32_t locality, tpm_flushcontext_in *in)
 {
     uint32_t ret;
-    uint32_t cmd_size, rsp_size;
     uint16_t rsp_tag;
     void *other;
 
@@ -2228,29 +1857,7 @@ static uint32_t _tpm20_context_flush(uint32_t locality, tpm_flushcontext_in *in)
     other = (void *)cmd_buf + CMD_HEAD_SIZE;
     reverse_copy_in(other, in->flushHandle);
 
-    /*
-     * Now set the command size field, now that we know the size of the whole
-     * command
-     */
-    cmd_size = (uint8_t *)other - cmd_buf;
-    reverse_copy(cmd_buf + CMD_SIZE_OFFSET, &cmd_size, sizeof(cmd_size));
-
-    rsp_size = RSP_HEAD_SIZE;
-
-    if (g_tpm_family == TPM_IF_20_FIFO)
-    {
-        if (!tpm_submit_cmd(locality, cmd_buf, cmd_size, rsp_buf, &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-    if (g_tpm_family == TPM_IF_20_CRB)
-    {
-        if (!tpm_submit_cmd_crb(locality, cmd_buf, cmd_size, rsp_buf,
-                &rsp_size))
-            return TPM_RC_FAILURE;
-    }
-
-    reverse_copy(&ret, rsp_buf + RSP_RST_OFFSET, sizeof(ret));
-
+    ret = _tpm20_send_cmd(other, locality, RSP_HEAD_SIZE);
     if ( ret != TPM_RC_SUCCESS )
         return ret;
 
@@ -2860,7 +2467,6 @@ static uint32_t cf_check tpm20_save_state(struct tpm_if *ti, uint32_t locality)
     return ret;
 }
 
-#define TPM_NR_PCRS             24
 #define TPM_PCR_RESETABLE_MIN   16
 static bool cf_check tpm20_cap_pcrs(struct tpm_if *ti, uint32_t locality, int pcr)
 {
@@ -2971,8 +2577,8 @@ static bool cf_check tpm20_init(struct tpm_if *ti)
     ti->cur_loc = 0;
 
     /* init version */
-    ti->major = TPM20_VER_MAJOR;
-    ti->minor = TPM20_VER_MINOR;
+    ti->version.major = TPM20_VER_MAJOR;
+    ti->version.minor = TPM20_VER_MINOR;
 
     /* init timeouts value */
     ti->timeout.timeout_a = TIMEOUT_A;
@@ -3091,7 +2697,7 @@ out:
     return true;
 }
 
-const struct tpm_if_fp tpm_20_if_fp = {
+const struct tpm_cmd_if tpm_20_cmds = {
     .init = tpm20_init,
     .pcr_read = tpm20_pcr_read,
     .pcr_extend = tpm20_pcr_extend,
