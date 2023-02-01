@@ -22,7 +22,7 @@ static bool feature_hwp_peci;
 
 static bool feature_hdc;
 
-__initdata bool opt_cpufreq_hwp = false;
+__initdata bool opt_cpufreq_hwp = true;
 __initdata bool opt_cpufreq_hdc = true;
 
 #define HWP_ENERGY_PERF_MAX_PERFORMANCE 0
