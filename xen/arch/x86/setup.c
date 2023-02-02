@@ -23,6 +23,7 @@
 #include <xen/dmi.h>
 #include <xen/pfn.h>
 #include <xen/nodemask.h>
+#include <xen/secdev.h>
 #include <xen/virtual_region.h>
 #include <xen/watchdog.h>
 #include <public/version.h>
@@ -951,6 +952,35 @@ static struct domain *__init create_dom0(const module_t *image,
         write_cr4(read_cr4() & ~X86_CR4_SMAP);
     }
 
+    /* Dom0 can now be measure as the comand line has been finalized. */
+    if ( secdev_available(SECDEV_TPM) )
+    {
+        void *image_base = bootstrap_map(image);
+        secdev_opt_t opts = { 0 };
+
+        opts.tpm.domain.locality = SECDEV_TPM_DEFAULT_LOCALITY;
+        opts.tpm.domain.pcr = SECDEV_TPM_DEFAULT_PCR;
+
+        opts.tpm.domain.kern = image_base + headroom;
+        opts.tpm.domain.kern_size = image->mod_end - headroom;
+
+        opts.tpm.domain.cmdline = cmdline;
+
+        printk(XENLOG_INFO "%pd: measuring kernel%s\n", d,
+            initrd ? " and ramdisk" : "");
+
+        if ( initrd )
+        {
+            opts.tpm.domain.initrd = bootstrap_map(initrd);
+            opts.tpm.domain.initrd_size = initrd->mod_end;
+        }
+
+        if ( secdev_measure_domain(SECDEV_TPM, &opts) < 0 )
+            printk(XENLOG_ERR " Domain measurement failed\n");
+
+        bootstrap_map(NULL);
+    }
+
     if ( construct_dom0(d, image, headroom, initrd, cmdline) != 0 )
         panic("Could not construct domain 0\n");
 
@@ -1769,6 +1799,9 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     paging_init();
 
     tboot_probe();
+
+    if ( secdev_init() == 0 )
+        printk("Security Devices initialized\n");
 
     open_softirq(NEW_TLBFLUSH_CLOCK_PERIOD_SOFTIRQ, new_tlbflush_clock_period);
 
