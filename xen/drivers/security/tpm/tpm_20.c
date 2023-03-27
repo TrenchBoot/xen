@@ -378,6 +378,8 @@ static bool reverse_copy_digest_values_out(
     return true;
 }
 
+/* TODO: utility functions for primary creation, see TODO there. */
+#if 0
 /*
  * Copy public data from input data structure into output data stream
  * for commands that require it.
@@ -1082,6 +1084,7 @@ static bool reverse_copy_ticket_out(TPMT_TK_CREATION *ticket, void **other)
 
     return true;
 }
+#endif
 
 static void reverse_copy_context_in(void **other, TPMS_CONTEXT *context)
 {
@@ -1539,9 +1542,10 @@ static uint32_t _tpm20_shutdown(uint32_t locality, uint16_t type)
     return _tpm20_send_cmd(other, locality, RSP_HEAD_SIZE);
 }
 
-uint32_t handle2048 = 0;
 //static const char auth_str[] = "test";
 
+/* TODO: Add an appropriate per domain key creation */
+#if 0
 static uint32_t _tpm20_create_primary(
     uint32_t locality, tpm_create_primary_in *in, tpm_create_primary_out *out)
 {
@@ -1625,7 +1629,7 @@ static uint32_t _tpm20_create_primary(
 
     return ret;
 }
-
+#endif
 
 /* TODO: Add an appropriate seal/unseal for Xen */
 #if 0
@@ -2562,14 +2566,68 @@ static bool cf_check tpm20_context_load(
     return true;
 }
 
+#if 0
+/* Moving primary logic out of init for use to create a key per domain */
+static bool tpm20_create_key(void)
+{
+    tpm_create_primary_in primary_in;
+    tpm_create_primary_out primary_out;
+
+    /* create primary object as parent obj for seal */
+    primary_in.primary_handle = TPM_RH_NULL;
+    primary_in.sessions.num_sessions = 1;
+    primary_in.sessions.sessions[0].session_handle = TPM_RS_PW;
+    primary_in.sessions.sessions[0].nonce.t.size = 0;
+    primary_in.sessions.sessions[0].hmac.t.size = 0;
+    *((uint8_t *)((void *)&primary_in.sessions.sessions[0].session_attr)) = 0;
+
+    primary_in.sensitive.t.sensitive.user_auth.t.size = 2;
+    primary_in.sensitive.t.sensitive.user_auth.t.buffer[0] = 0x00;
+    primary_in.sensitive.t.sensitive.user_auth.t.buffer[1] = 0xff;
+    primary_in.sensitive.t.sensitive.data.t.size = 0;
+
+    primary_in.public.t.public_area.type = TPM_ALG_RSA;
+    primary_in.public.t.public_area.name_alg = ti->cur_alg;
+    *(uint32_t *)&primary_in.public.t.public_area.object_attr = 0;
+    primary_in.public.t.public_area.object_attr.restricted = 1;
+    primary_in.public.t.public_area.object_attr.userWithAuth = 1;
+    primary_in.public.t.public_area.object_attr.decrypt = 1;
+    primary_in.public.t.public_area.object_attr.fixedTPM = 1;
+    primary_in.public.t.public_area.object_attr.fixedParent = 1;
+    primary_in.public.t.public_area.object_attr.noDA = 1;
+    primary_in.public.t.public_area.object_attr.sensitiveDataOrigin = 1;
+    primary_in.public.t.public_area.auth_policy.t.size = 0;
+    primary_in.public.t.public_area.param.rsa.symmetric.alg = TPM_ALG_AES;
+    primary_in.public.t.public_area.param.rsa.symmetric.key_bits.aes= 128;
+    primary_in.public.t.public_area.param.rsa.symmetric.mode.aes = TPM_ALG_CFB;
+    primary_in.public.t.public_area.param.rsa.scheme.scheme = TPM_ALG_NULL;
+    primary_in.public.t.public_area.param.rsa.key_bits = 2048;
+    primary_in.public.t.public_area.param.rsa.exponent = 0;
+    primary_in.public.t.public_area.unique.keyed_hash.t.size = 0;
+    primary_in.outside_info.t.size = 0;
+    primary_in.creation_pcr.count = 0;
+
+    printk(XENLOG_INFO"TPM:CreatePrimary creating hierarchy handle = %08X\n",
+        primary_in.primary_handle);
+    ret = _tpm20_create_primary(ti->cur_loc, &primary_in, &primary_out);
+    if (ret != TPM_RC_SUCCESS) {
+        printk(XENLOG_WARNING"TPM: CreatePrimary return value = %08X\n", ret);
+        ti->error = ret;
+        return false;
+    }
+    handle2048 = primary_out.obj_handle;
+
+    printk(XENLOG_INFO"TPM:CreatePrimary created object handle = %08X\n",
+        handle2048);
+}
+#endif
+
 static bool cf_check tpm20_init(struct tpm_if *ti)
 {
     uint32_t ret;
     unsigned int i;
     tpm_pcr_event_in event_in;
     tpm_pcr_event_out event_out;
-    tpm_create_primary_in primary_in;
-    tpm_create_primary_out primary_out;
 
     if ( ti == NULL )
         return false;
@@ -2643,56 +2701,6 @@ static bool cf_check tpm20_init(struct tpm_if *ti)
         return false;
     }
 
-    if (handle2048 != 0)
-        goto out;
-
-    /* create primary object as parent obj for seal */
-    primary_in.primary_handle = TPM_RH_NULL;
-    primary_in.sessions.num_sessions = 1;
-    primary_in.sessions.sessions[0].session_handle = TPM_RS_PW;
-    primary_in.sessions.sessions[0].nonce.t.size = 0;
-    primary_in.sessions.sessions[0].hmac.t.size = 0;
-    *((uint8_t *)((void *)&primary_in.sessions.sessions[0].session_attr)) = 0;
-
-    primary_in.sensitive.t.sensitive.user_auth.t.size = 2;
-    primary_in.sensitive.t.sensitive.user_auth.t.buffer[0] = 0x00;
-    primary_in.sensitive.t.sensitive.user_auth.t.buffer[1] = 0xff;
-    primary_in.sensitive.t.sensitive.data.t.size = 0;
-
-    primary_in.public.t.public_area.type = TPM_ALG_RSA;
-    primary_in.public.t.public_area.name_alg = ti->cur_alg;
-    *(uint32_t *)&primary_in.public.t.public_area.object_attr = 0;
-    primary_in.public.t.public_area.object_attr.restricted = 1;
-    primary_in.public.t.public_area.object_attr.userWithAuth = 1;
-    primary_in.public.t.public_area.object_attr.decrypt = 1;
-    primary_in.public.t.public_area.object_attr.fixedTPM = 1;
-    primary_in.public.t.public_area.object_attr.fixedParent = 1;
-    primary_in.public.t.public_area.object_attr.noDA = 1;
-    primary_in.public.t.public_area.object_attr.sensitiveDataOrigin = 1;
-    primary_in.public.t.public_area.auth_policy.t.size = 0;
-    primary_in.public.t.public_area.param.rsa.symmetric.alg = TPM_ALG_AES;
-    primary_in.public.t.public_area.param.rsa.symmetric.key_bits.aes= 128;
-    primary_in.public.t.public_area.param.rsa.symmetric.mode.aes = TPM_ALG_CFB;
-    primary_in.public.t.public_area.param.rsa.scheme.scheme = TPM_ALG_NULL;
-    primary_in.public.t.public_area.param.rsa.key_bits = 2048;
-    primary_in.public.t.public_area.param.rsa.exponent = 0;
-    primary_in.public.t.public_area.unique.keyed_hash.t.size = 0;
-    primary_in.outside_info.t.size = 0;
-    primary_in.creation_pcr.count = 0;
-
-    printk(XENLOG_INFO"TPM:CreatePrimary creating hierarchy handle = %08X\n",
-        primary_in.primary_handle);
-    ret = _tpm20_create_primary(ti->cur_loc, &primary_in, &primary_out);
-    if (ret != TPM_RC_SUCCESS) {
-        printk(XENLOG_WARNING"TPM: CreatePrimary return value = %08X\n", ret);
-        ti->error = ret;
-        return false;
-    }
-    handle2048 = primary_out.obj_handle;
-
-    printk(XENLOG_INFO"TPM:CreatePrimary created object handle = %08X\n",
-        handle2048);
-out:
     tpm_print(ti);
     return true;
 }
