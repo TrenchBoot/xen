@@ -2,6 +2,7 @@ obj-bin-y += head.o
 
 obj32 := cmdline.32.o
 obj32 += reloc.32.o
+obj32 += txt_early.32.o
 
 nocov-y   += $(obj32)
 noubsan-y += $(obj32)
