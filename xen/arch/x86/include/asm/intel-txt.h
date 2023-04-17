@@ -68,6 +68,9 @@
 
 #ifndef __ASSEMBLER__
 
+#include <xen/multiboot2.h>
+#include <xen/slr-table.h>
+
 /* Need to differentiate between pre- and post paging enabled. */
 #ifdef __EARLY_SLAUNCH__
 #include <xen/macros.h>
@@ -263,6 +266,124 @@ static inline void *txt_init(void)
         txt_reset(SLAUNCH_ERROR_HEAP_BAD_OS2SINIT);
 
     return txt_heap;
+}
+
+static inline bool is_in_pmr(const struct txt_os_sinit_data *os_sinit,
+                             uint64_t base, uint32_t size, bool check_high)
+{
+    /* Check for size overflow. */
+    if ( base + size < base )
+        txt_reset(SLAUNCH_ERROR_INTEGER_OVERFLOW);
+
+    /*
+     * txt_verify_pmr_ranges() makes sure the low range always starts at 0, so
+     * its size is also end address.
+     */
+    if ( base + size <= os_sinit->vtd_pmr_lo_size )
+        return true;
+
+    if ( check_high && os_sinit->vtd_pmr_hi_size != 0 )
+    {
+        if ( base >= os_sinit->vtd_pmr_hi_base &&
+             base + size <= os_sinit->vtd_pmr_hi_base +
+                            os_sinit->vtd_pmr_hi_size )
+            return true;
+    }
+
+    return false;
+}
+
+static inline void txt_verify_pmr_ranges(
+    const struct txt_os_mle_data *os_mle,
+    const struct txt_os_sinit_data *os_sinit,
+    const struct slr_entry_intel_info *info,
+    uint32_t load_base_addr,
+    uint32_t tgt_base_addr,
+    uint32_t xen_size)
+{
+    bool check_high_pmr = false;
+
+    /* Verify the value of the low PMR base. It should always be 0. */
+    if ( os_sinit->vtd_pmr_lo_base != 0 )
+        txt_reset(SLAUNCH_ERROR_LO_PMR_BASE);
+
+    /*
+     * Low PMR size should not be 0 on current platforms. There is an ongoing
+     * transition to TPR-based DMA protection instead of PMR-based; this is not
+     * yet supported by the code.
+     */
+    if ( os_sinit->vtd_pmr_lo_size == 0 )
+        txt_reset(SLAUNCH_ERROR_LO_PMR_SIZE);
+
+    /* Check if regions overlap. Treat regions with no hole between as error. */
+    if ( os_sinit->vtd_pmr_hi_size != 0 &&
+         os_sinit->vtd_pmr_hi_base <= os_sinit->vtd_pmr_lo_size )
+        txt_reset(SLAUNCH_ERROR_HI_PMR_BASE);
+
+    /* Check for size overflow. */
+    if ( os_sinit->vtd_pmr_hi_base + os_sinit->vtd_pmr_hi_size <
+         os_sinit->vtd_pmr_hi_size )
+        txt_reset(SLAUNCH_ERROR_INTEGER_OVERFLOW);
+
+    /* All regions accessed by 32b code must be below 4G. */
+    if ( os_sinit->vtd_pmr_hi_base + os_sinit->vtd_pmr_hi_size <=
+         0x100000000ULL )
+        check_high_pmr = true;
+
+    /*
+     * ACM checks that TXT heap and MLE memory is protected against DMA. We have
+     * to check if MBI and whole Xen memory is protected. The latter is done in
+     * case bootloader failed to set whole image as MLE and to make sure that
+     * both pre- and post-relocation code is protected.
+     */
+
+    /* Check if all of Xen before relocation is covered by PMR. */
+    if ( !is_in_pmr(os_sinit, load_base_addr, xen_size, check_high_pmr) )
+        txt_reset(SLAUNCH_ERROR_LO_PMR_MLE);
+
+    /* Check if all of Xen after relocation is covered by PMR. */
+    if ( load_base_addr != tgt_base_addr &&
+         !is_in_pmr(os_sinit, tgt_base_addr, xen_size, check_high_pmr) )
+        txt_reset(SLAUNCH_ERROR_LO_PMR_MLE);
+
+    /*
+     * If present, check that MBI is covered by PMR. MBI starts with 'uint32_t
+     * total_size'.
+     */
+    if ( info->boot_params_base != 0 )
+    {
+        const multiboot2_fixed_t *mbi =
+            (const multiboot2_fixed_t *)(uintptr_t)info->boot_params_base;
+
+        if ( !is_in_pmr(os_sinit, info->boot_params_base, mbi->total_size,
+                        check_high_pmr) )
+            txt_reset(SLAUNCH_ERROR_BUFFER_BEYOND_PMR);
+    }
+
+    /* Check if TPM event log (if present) is covered by PMR. */
+    /*
+     * FIXME: currently commented out as GRUB allocates it in a hole between
+     * PMR and reserved RAM, due to 2MB resolution of PMR. There are no other
+     * easy-to-use DMA protection mechanisms that would allow to protect that
+     * part of memory. TPR (TXT DMA Protection Range) gives 1MB resolution, but
+     * it still wouldn't be enough.
+     *
+     * One possible solution would be for GRUB to allocate log at lower address,
+     * but this would further increase memory space fragmentation. Another
+     * option is to align PMR up instead of down, making PMR cover part of
+     * reserved region, but it is unclear what the consequences may be.
+     *
+     * In tboot this issue was resolved by reserving leftover chunks of memory
+     * in e820 and/or UEFI memory map. This is also a valid solution, but would
+     * require more changes to GRUB than the ones listed above, as event log is
+     * allocated much earlier than PMRs.
+     */
+    /*
+    if ( os_mle->evtlog_addr != 0 && os_mle->evtlog_size != 0 &&
+         !is_in_pmr(os_sinit, os_mle->evtlog_addr, os_mle->evtlog_size,
+                    check_high_pmr) )
+        txt_reset(SLAUNCH_ERROR_BUFFER_BEYOND_PMR);
+    */
 }
 
 #endif /* !__ASSEMBLER__ */
