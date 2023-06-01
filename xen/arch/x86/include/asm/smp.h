@@ -40,8 +40,8 @@ extern void (*mtrr_hook) (void);
 extern void zap_low_mappings(void);
 
 struct x86_smpboot_cpu_data {
+    void *stack_base;
     unsigned int apicid;
-    /* More fields will be added here. */
 };
 
 extern struct x86_smpboot_cpu_data smpboot_data[];
@@ -77,7 +77,7 @@ extern cpumask_t **socket_cpumask;
  * by certain scheduling code only.
  */
 #define get_cpu_current(cpu) \
-    (get_cpu_info_from_stack((unsigned long)stack_base[cpu])->current_vcpu)
+    (get_cpu_info_from_stack((unsigned long)smpboot_data[cpu].stack_base)->current_vcpu)
 
 extern unsigned int disabled_cpus;
 extern bool unaccounted_cpus;

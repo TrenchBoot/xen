@@ -804,7 +804,7 @@ static void __init noreturn reinit_bsp_stack(void)
     /* Update SYSCALL trampolines */
     percpu_traps_init();
 
-    stack_base[0] = stack;
+    smpboot_data[0].stack_base = stack;
 
     rc = setup_cpu_root_pgt(0);
     if ( rc )
