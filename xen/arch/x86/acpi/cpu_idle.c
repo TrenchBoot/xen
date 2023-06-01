@@ -1256,7 +1256,7 @@ int get_cpu_id(u32 acpi_id)
 
     for ( i = 0; i < nr_cpu_ids; i++ )
     {
-        if ( apic_id == x86_cpu_to_apicid[i] )
+        if ( apic_id == cpu_physical_id(i) )
             return i;
     }
 
@@ -1362,7 +1362,7 @@ long set_cx_pminfo(uint32_t acpi_id, struct xen_processor_power *power)
 
     if ( !cpu_online(cpu_id) )
     {
-        uint32_t apic_id = x86_cpu_to_apicid[cpu_id];
+        uint32_t apic_id = cpu_physical_id(cpu_id);
 
         /*
          * If we've just learned of more available C states, wake the CPU if
