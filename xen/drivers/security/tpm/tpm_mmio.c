@@ -39,6 +39,7 @@
 #include <xen/lib/hash.h>
 #include <xen/lib/sha1.h>
 #include <xen/lib/sha2.h>
+#include <xen/time.h>
 
 #include "tpm.h"
 
@@ -58,16 +59,20 @@ typedef union {
 } tpm_reg_data_crb_t;
 
 #define TPM_ACTIVE_LOCALITY_TIME_OUT    \
-          (TIMEOUT_UNIT *get_tpm()->timeout.timeout_a)  /* according to spec */
+          (get_tpm()->timeout.timeout_a)  /* according to spec */
 #define TPM_CMD_READY_TIME_OUT          \
-          (TIMEOUT_UNIT *get_tpm()->timeout.timeout_b)  /* according to spec */
+          (get_tpm()->timeout.timeout_b)  /* according to spec */
 #define TPM_CMD_WRITE_TIME_OUT          \
-          (TIMEOUT_UNIT *get_tpm()->timeout.timeout_d)  /* let it long enough */
+          (get_tpm()->timeout.timeout_d)  /* let it long enough */
 #define TPM_DATA_AVAIL_TIME_OUT         \
-          (TIMEOUT_UNIT *get_tpm()->timeout.timeout_c)  /* let it long enough */
+          (get_tpm()->timeout.timeout_c)  /* let it long enough */
 #define TPM_RSP_READ_TIME_OUT           \
-          (TIMEOUT_UNIT *get_tpm()->timeout.timeout_d)  /* let it long enough */
+          (get_tpm()->timeout.timeout_d)  /* let it long enough */
 #define TPM_VALIDATE_LOCALITY_TIME_OUT  0x100
+
+#define tpm_loop_until_timeout(now, end, timeout)                             \
+    for (now = NOW(), end = now + MILLISECS(timeout);    \
+          now < end; now = NOW() )
 
 #define read_tpm_sts_reg(locality) { \
 if ( get_tpm()->family == TPM_IF_12 ) \
@@ -120,7 +125,7 @@ static bool tpm_check_expect_status(uint32_t locality)
     return g_reg_sts.sts_valid == 1 && g_reg_sts.expect == 0;
 }
 
-static bool tpm_check_da_status(uint32_t locality)
+static bool tpm_check_data_access_status(uint32_t locality)
 {
     read_tpm_sts_reg(locality);
 #ifdef TPM_TRACE
@@ -134,7 +139,7 @@ static bool tpm_check_da_status(uint32_t locality)
 
 bool cf_check fifo_request_locality(uint32_t locality)
 {
-    uint32_t            i;
+    s_time_t            now, end;
     tpm_reg_access_t    reg_acc;
 
     /* request access to the TPM from locality N */
@@ -142,17 +147,17 @@ bool cf_check fifo_request_locality(uint32_t locality)
     reg_acc.request_use = 1;
     write_tpm_reg(locality, TPM_REG_ACCESS, &reg_acc);
 
-    i = 0;
-    do {
+    tpm_loop_until_timeout(now, end, TPM_ACTIVE_LOCALITY_TIME_OUT);
+    {
         read_tpm_reg(locality, TPM_REG_ACCESS, &reg_acc);
         if ( reg_acc.active_locality == 1 )
             break;
         else
             cpu_relax();
-        i++;
-    } while ( i <= TPM_ACTIVE_LOCALITY_TIME_OUT);
+        now = NOW();
+    }
 
-    if ( i > TPM_ACTIVE_LOCALITY_TIME_OUT )
+    if ( now > end )
     {
         printk(XENLOG_ERR"TPM: FIFO_INF access reg request use timeout\n");
         return false;
@@ -163,10 +168,10 @@ bool cf_check fifo_request_locality(uint32_t locality)
 
 static bool cf_check fifo_validate_locality(uint32_t locality)
 {
-    uint32_t i;
+    s_time_t now, end;
     tpm_reg_access_t reg_acc;
 
-    for ( i = TPM_VALIDATE_LOCALITY_TIME_OUT; i > 0; i-- )
+    tpm_loop_until_timeout(now, end, TPM_ACTIVE_LOCALITY_TIME_OUT);
     {
         /*
          * TCG spec defines reg_acc.tpm_reg_valid_sts bit to indicate whether
@@ -179,7 +184,7 @@ static bool cf_check fifo_validate_locality(uint32_t locality)
             return true;
         cpu_relax();
     }
-    if ( i <= 0 )
+    if ( now > end )
         printk(XENLOG_ERR"TPM: tpm_validate_locality timeout\n");
 
     return false;
@@ -187,6 +192,7 @@ static bool cf_check fifo_validate_locality(uint32_t locality)
 
 static bool cf_check fifo_release_locality(uint32_t locality)
 {
+    s_time_t            now, end;
     uint32_t i;
     tpm_reg_access_t reg_acc;
 
@@ -206,15 +212,15 @@ static bool cf_check fifo_release_locality(uint32_t locality)
     reg_acc.active_locality = 1;
     write_tpm_reg(locality, TPM_REG_ACCESS, &reg_acc);
 
-    i = 0;
-    do {
+    tpm_loop_until_timeout(now, end, TPM_ACTIVE_LOCALITY_TIME_OUT);
+    {
         read_tpm_reg(locality, TPM_REG_ACCESS, &reg_acc);
         if ( reg_acc.active_locality == 0 )
             return true;
         else
             cpu_relax();
         i++;
-    } while ( i <= TPM_ACTIVE_LOCALITY_TIME_OUT );
+    }
 
     printk(XENLOG_INFO"TPM: access reg release locality timeout\n");
     return false;
@@ -249,7 +255,7 @@ static bool fifo_check_cmd_ready_status(uint32_t locality)
 
 static bool fifo_wait_cmd_ready(uint32_t locality)
 {
-    uint32_t i;
+    s_time_t now, end;
 
     /* request access to the TPM from locality N */
     if ( !fifo_request_locality(locality) )
@@ -260,8 +266,8 @@ static bool fifo_wait_cmd_ready(uint32_t locality)
     printk(XENLOG_INFO"TPM: wait for cmd ready \n");
 #endif
 
-    i = 0;
-    do {
+    tpm_loop_until_timeout(now, end, TPM_CMD_READY_TIME_OUT);
+    {
         fifo_send_cmd_ready_status(locality);
         cpu_relax();
         /* then see if it has */
@@ -271,12 +277,12 @@ static bool fifo_wait_cmd_ready(uint32_t locality)
         else
             cpu_relax();
         i++;
-    } while ( i <= TPM_CMD_READY_TIME_OUT );
+    }
 #ifdef TPM_TRACE
     printk(XENLOG_INFO"\n");
 #endif
 
-    if ( i > TPM_CMD_READY_TIME_OUT )
+    if ( now > end )
     {
         tpm_print_status_register();
         printk(XENLOG_INFO"TPM: tpm timeout for command_ready\n");
@@ -297,8 +303,9 @@ static void fifo_execute_cmd(uint32_t locality)
 static bool cf_check fifo_submit_cmd(
     uint32_t locality, uint8_t *in, u32 in_size,  u8 *out, u32 *out_size)
 {
-    uint32_t i, rsp_size, offset;
+    uint32_t rsp_size, offset;
     uint16_t row_size;
+    s_time_t now, end;
 
     if ( locality >= TPM_NR_LOCALITIES )
     {
@@ -338,15 +345,16 @@ static bool cf_check fifo_submit_cmd(
     /* write the command to the TPM FIFO */
     offset = 0;
     do {
-        i = 0;
-        do {
+        tpm_loop_until_timeout(now, end, TPM_CMD_WRITE_TIME_OUT);
+        {
             /* find out how many bytes the TPM can accept in a row */
             row_size = tpm_get_burst_count(locality);
-            if ( row_size > 0 )   break;
-            else  cpu_relax();
-            i++;
-        } while ( i <= TPM_CMD_WRITE_TIME_OUT );
-        if ( i > TPM_CMD_WRITE_TIME_OUT )
+            if ( row_size > 0 )
+                break;
+            else
+                cpu_relax();
+        }
+        if ( now > end )
         {
             printk(XENLOG_ERR"TPM: write cmd timeout\n");
             fifo_quick_release_locality(locality);
@@ -358,15 +366,14 @@ static bool cf_check fifo_submit_cmd(
                 (tpm_reg_data_fifo_t *)&in[offset]);
     } while ( offset < in_size );
 
-    i = 0;
-    do {
+    tpm_loop_until_timeout(now, end, TPM_DATA_AVAIL_TIME_OUT);
+    {
         if ( tpm_check_expect_status(locality) )
             break;
         else
             cpu_relax();
-        i++;
-    } while ( i <= TPM_DATA_AVAIL_TIME_OUT );
-    if ( i > TPM_DATA_AVAIL_TIME_OUT )
+    }
+    if ( now > end )
     {
         printk(XENLOG_ERR"TPM: wait for expect becoming 0 timeout\n");
         fifo_quick_release_locality(locality);
@@ -377,15 +384,15 @@ static bool cf_check fifo_submit_cmd(
     fifo_execute_cmd(locality);
 
     /* check for data available */
-    i = 0;
-    do {
-        if ( tpm_check_da_status(locality) )
+    tpm_loop_until_timeout(now, end, TPM_DATA_AVAIL_TIME_OUT);
+    {
+        if ( tpm_check_data_access_status(locality) )
             break;
         else
             cpu_relax();
         i++;
-    } while ( i <= TPM_DATA_AVAIL_TIME_OUT );
-    if ( i > TPM_DATA_AVAIL_TIME_OUT ) {
+    }
+    if ( now > end ) {
         printk(XENLOG_ERR"TPM: wait for data available timeout\n");
         fifo_quick_release_locality(locality);
         return false;
@@ -395,16 +402,16 @@ static bool cf_check fifo_submit_cmd(
     offset = 0;
     do {
         /* find out how many bytes the TPM returned in a row */
-        i = 0;
-        do {
+        tpm_loop_until_timeout(now, end, TPM_RSP_READ_TIME_OUT);
+        {
             row_size = tpm_get_burst_count(locality);
             if ( row_size > 0 )
                 break;
             else
                 cpu_relax();
             i++;
-        } while ( i <= TPM_RSP_READ_TIME_OUT );
-        if ( i > TPM_RSP_READ_TIME_OUT )
+        }
+        if ( now > end )
         {
             printk(XENLOG_ERR"TPM: read rsp timeout\n");
             fifo_quick_release_locality(locality);
@@ -466,27 +473,26 @@ static bool crb_locality_workaround(void);
 
 static bool cf_check crb_request_locality(uint32_t locality)
 {
-    uint32_t i;
     tpm_reg_loc_state_t  reg_loc_state;
     tpm_reg_loc_ctrl_t    reg_loc_ctrl;
+    s_time_t now, end;
 
     /* request access to the TPM from locality N */
     memset(&reg_loc_ctrl,0,sizeof(reg_loc_ctrl));
     reg_loc_ctrl.requestAccess = 1;
     write_tpm_reg(locality, TPM_REG_LOC_CTRL, &reg_loc_ctrl);
 
-    i = 0;
-    do {
+    tpm_loop_until_timeout(now, end, TPM_ACTIVE_LOCALITY_TIME_OUT);
+    {
         read_tpm_reg(locality, TPM_REG_LOC_STATE, &reg_loc_state);
         if ( reg_loc_state.active_locality == locality &&
              reg_loc_state.loc_assigned == 1)
             break;
         else
             cpu_relax();
-        i++;
-    } while ( i <= TPM_ACTIVE_LOCALITY_TIME_OUT );
+    }
 
-    if ( i > TPM_ACTIVE_LOCALITY_TIME_OUT )
+    if ( now > end )
     {
         printk(XENLOG_ERR"TPM: access loc request use timeout\n");
         printk(XENLOG_ERR"  attempting workaround\n");
@@ -523,10 +529,10 @@ static bool crb_locality_workaround(void)
 
 bool cf_check crb_validate_locality(uint32_t locality)
 {
-    uint32_t i;
     tpm_reg_loc_state_t reg_loc_state;
+    s_time_t now, end;
 
-    for ( i = TPM_VALIDATE_LOCALITY_TIME_OUT; i > 0; i-- )
+    tpm_loop_until_timeout(now, end, TPM_ACTIVE_LOCALITY_TIME_OUT);
     {
         /*
         *  Platfrom Tpm  Profile for TPM 2.0 SPEC
@@ -551,9 +557,9 @@ bool cf_check crb_validate_locality(uint32_t locality)
 
 bool cf_check crb_relinquish_locality(uint32_t locality)
 {
-    uint32_t i;
     tpm_reg_loc_state_t reg_loc_state;
     tpm_reg_loc_ctrl_t reg_loc_ctrl;
+    s_time_t now, end;
 
 #ifdef TPM_TRACE
     printk(XENLOG_INFO"TPM: releasing CRB_INF locality %u\n", locality);
@@ -570,15 +576,14 @@ bool cf_check crb_relinquish_locality(uint32_t locality)
     reg_loc_ctrl.relinquish = 1;
     write_tpm_reg(locality, TPM_REG_LOC_CTRL, &reg_loc_ctrl);
 
-    i = 0;
-    do {
+    tpm_loop_until_timeout(now, end, TPM_ACTIVE_LOCALITY_TIME_OUT);
+    {
         read_tpm_reg(locality, TPM_REG_LOC_STATE, &reg_loc_state);
         if ( reg_loc_state.loc_assigned == 0 )
             return true;
         else
             cpu_relax();
-        i++;
-    } while ( i <= TPM_ACTIVE_LOCALITY_TIME_OUT );
+    }
 
     printk(XENLOG_INFO"TPM: CRB_INF release locality timeout\n");
     return false;
@@ -587,9 +592,9 @@ bool cf_check crb_relinquish_locality(uint32_t locality)
 
 static bool crb_send_cmd_ready_status(uint32_t locality)
 {
-    uint32_t i = 0;
     tpm_reg_ctrl_request_t reg_ctrl_request;
     tpm_reg_ctrl_sts_t reg_ctrl_sts;
+    s_time_t now, end;
 
     read_tpm_reg(locality, TPM_CRB_CTRL_STS, &reg_ctrl_sts);
 
@@ -611,7 +616,8 @@ static bool crb_send_cmd_ready_status(uint32_t locality)
     reg_ctrl_request.goIdle = 1;
     write_tpm_reg(locality, TPM_CRB_CTRL_REQ, &reg_ctrl_request);
 
-    do {
+    tpm_loop_until_timeout(now, end, TPM_DATA_AVAIL_TIME_OUT);
+    {
         read_tpm_reg(locality, TPM_CRB_CTRL_REQ, &reg_ctrl_request);
         if ( reg_ctrl_request.goIdle == 0)
         {
@@ -631,9 +637,9 @@ static bool crb_send_cmd_ready_status(uint32_t locality)
 
         }
         i++;
-    } while ( i <= TPM_DATA_AVAIL_TIME_OUT);
+    }
 
-    if ( i > TPM_DATA_AVAIL_TIME_OUT )
+    if ( now > end )
     {
         printk(XENLOG_ERR"TPM: reg_ctrl_request.goidle timeout!\n");
         return false;
@@ -689,23 +695,23 @@ static bool crb_check_cmd_ready_status(uint32_t locality)
 
 static bool crb_wait_cmd_ready(uint32_t locality)
 {
-    uint32_t i;
+    s_time_t now, end;
 
     /* ensure the TPM is ready to accept a command */
 #ifdef TPM_TRACE
     printk(XENLOG_INFO"TPM: wait for cmd ready \n");
 #endif
     crb_send_cmd_ready_status(locality);
-    i = 0;
-    do {
+    tpm_loop_until_timeout(now, end, TPM_CMD_READY_TIME_OUT);
+    {
         if ( crb_check_cmd_ready_status(locality) )
             break;
         else
             cpu_relax();
         i++;
-    } while ( i <= TPM_CMD_READY_TIME_OUT );
+    }
 
-    if ( i > TPM_CMD_READY_TIME_OUT )
+    if ( now > end )
     {
         //tpm_print_status_register();
         printk(XENLOG_INFO"TPM: tpm timeout for command_ready\n");
@@ -726,6 +732,7 @@ bool cf_check crb_submit_cmd(
     tpm_reg_ctrl_rspsize_t  RspSize;
     tpm_reg_ctrl_rspaddr_t  RspAddr;
     uint32_t tpm_crb_data_buffer_base;
+    s_time_t now, end;
 
     if ( locality >= TPM_NR_LOCALITIES )
     {
@@ -806,8 +813,8 @@ bool cf_check crb_submit_cmd(
     printk(XENLOG_INFO"tpm_ctrl_start.start is 0x%x\n",start.start);
 
     /* check for data available */
-    i = 0;
-    do {
+    tpm_loop_until_timeout(now, end, TPM_DATA_AVAIL_TIME_OUT);
+    {
         read_tpm_reg(locality, TPM_CRB_CTRL_START, &start);
         //printk(XENLOG_INFO"tpm_ctrl_start.start is 0x%x\n",start.start);
         if ( start.start == 0 )
@@ -815,9 +822,9 @@ bool cf_check crb_submit_cmd(
          else
             cpu_relax();
          i++;
-    } while ( i <= TPM_DATA_AVAIL_TIME_OUT );
+    }
 
-    if ( i > TPM_DATA_AVAIL_TIME_OUT ) {
+    if ( now > end ) {
         printk(XENLOG_ERR"TPM: wait for data available timeout\n");
         return false;
     }

@@ -39,6 +39,7 @@
 #include <xen/lib/hash.h>
 #include <xen/lib/sha1.h>
 #include <xen/lib/sha2.h>
+#include <asm/byteorder.h>
 
 #include "tpm.h"
 
@@ -58,6 +59,7 @@ const uint8_t tpm_alg_list_count = ARRAY_SIZE(tpm_alg_list);
 
 bool tpm_detect(void)
 {
+#ifdef __LITTLE_ENDIAN
     struct tpm_if *tpm = get_tpm(); /* Don't leave tpm as NULL */
 
     /* default to SHA1 */
@@ -125,6 +127,10 @@ bool tpm_detect(void)
     }
 
     return tpm->cmds->init(tpm);
+#else
+    printk(XENLOG_INFO"TPM: big endian platforms not supported\n");
+    return false;
+#endif
 }
 
 void tpm_print(struct tpm_if *ti)

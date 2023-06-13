@@ -101,7 +101,6 @@
  * The term timeout applies to timings between various states
  * or transitions within the interface protocol.
  */
-#define TIMEOUT_UNIT    (0x100000 / 330) /* ~1ms, 1 tpm r/w need > 330ns */
 #define TIMEOUT_A       750  /* 750ms */
 #define TIMEOUT_B       2000 /* 2s */
 #define TIMEOUT_C       75000  /* 750ms */
@@ -173,6 +172,8 @@ typedef struct __packed {
 /* TPM_ACCESS_x */
 #define TPM_REG_ACCESS           0x00
 #define TPM_REG_STS              0x18
+
+/* TODO: Make these structures endian safe */
 
 typedef union {
     uint8_t _raw[1];                      /* 1-byte reg */
