@@ -67,15 +67,18 @@ struct x86_smpboot_cpu_data smpboot_data[NR_CPUS] __read_mostly =
     { [0 ... NR_CPUS-1].apicid = BAD_APICID };
 
 static int cpu_error;
-static enum cpu_state {
+enum cpu_state {
     CPU_STATE_DYING,    /* slave -> master: I am dying */
     CPU_STATE_DEAD,     /* slave -> master: I am completely dead */
-    CPU_STATE_INIT,     /* master -> slave: Early bringup phase 1 */
+    CPU_STATE_INIT,     /* slave -> master: Early bringup phase 1 completed */
     CPU_STATE_CALLOUT,  /* master -> slave: Early bringup phase 2 */
     CPU_STATE_CALLIN,   /* slave -> master: Completed phase 2 */
     CPU_STATE_ONLINE    /* master -> slave: Go fully online now. */
-} cpu_state;
-#define set_cpu_state(state) do { smp_mb(); cpu_state = (state); } while (0)
+};
+#define set_cpu_state(cpu, state) do { \
+    smp_mb(); \
+    smpboot_data[cpu].cpu_state = (state); \
+} while (0)
 
 void initialize_cpu_data(unsigned int cpu)
 {
@@ -164,16 +167,7 @@ static void synchronize_tsc_slave(unsigned int slave)
 static void smp_callin(void)
 {
     unsigned int cpu = smp_processor_id();
-    int i, rc;
-
-    /* Wait 2s total for startup. */
-    Dprintk("Waiting for CALLOUT.\n");
-    for ( i = 0; cpu_state != CPU_STATE_CALLOUT; i++ )
-    {
-        BUG_ON(i >= 200);
-        cpu_relax();
-        mdelay(10);
-    }
+    int rc;
 
     /*
      * The boot CPU has finished the init stage and is spinning on cpu_state
@@ -209,12 +203,12 @@ static void smp_callin(void)
     }
 
     /* Allow the master to continue. */
-    set_cpu_state(CPU_STATE_CALLIN);
+    set_cpu_state(cpu, CPU_STATE_CALLIN);
 
     synchronize_tsc_slave(cpu);
 
     /* And wait for our final Ack. */
-    while ( cpu_state != CPU_STATE_ONLINE )
+    while ( smpboot_data[cpu].cpu_state != CPU_STATE_ONLINE )
         cpu_relax();
 }
 
@@ -309,12 +303,19 @@ void asmlinkage start_secondary(unsigned int cpu)
 {
     struct cpu_info *info = get_cpu_info();
 
+    /* Tell BSP that we are awake. */
+    set_cpu_state(cpu, CPU_STATE_INIT);
+
     /*
      * Don't put anything before smp_callin(), SMP booting is so fragile that we
      * want to limit the things done here to the most necessary things.
      */
 
     /* Critical region without IDT or TSS.  Any fault is deadly! */
+
+    /* Wait until BSP tells us to proceed. */
+    while ( smpboot_data[cpu].cpu_state != CPU_STATE_CALLOUT )
+        cpu_relax();
 
     set_current(idle_vcpu[cpu]);
     this_cpu(curr_vcpu) = idle_vcpu[cpu];
@@ -582,26 +583,35 @@ static int do_boot_cpu(unsigned int apicid, int cpu)
 
     /* This grunge runs the startup process for the targeted processor. */
 
-    set_cpu_state(CPU_STATE_INIT);
-
     /* Starting actual IPI sequence... */
     boot_error = wakeup_secondary_cpu(apicid, start_eip);
 
     if ( !boot_error )
     {
-        /* Allow AP to start initializing. */
-        set_cpu_state(CPU_STATE_CALLOUT);
-        Dprintk("After Callout %d.\n", cpu);
-
-        /* Wait 5s total for a response. */
-        for ( timeout = 0; timeout < 50000; timeout++ )
+        /* Wait 2s total for a response. */
+        for ( timeout = 0; timeout < 20000; timeout++ )
         {
-            if ( cpu_state != CPU_STATE_CALLOUT )
+            if ( smpboot_data[cpu].cpu_state == CPU_STATE_INIT )
                 break;
             udelay(100);
         }
 
-        if ( cpu_state == CPU_STATE_CALLIN )
+        if ( smpboot_data[cpu].cpu_state == CPU_STATE_INIT )
+        {
+            /* Allow AP to start initializing. */
+            set_cpu_state(cpu, CPU_STATE_CALLOUT);
+            Dprintk("After Callout %d.\n", cpu);
+
+            /* Wait 5s total for a response. */
+            for ( timeout = 0; timeout < 500000; timeout++ )
+            {
+                if ( smpboot_data[cpu].cpu_state != CPU_STATE_CALLOUT )
+                    break;
+                udelay(10);
+            }
+        }
+
+        if ( smpboot_data[cpu].cpu_state == CPU_STATE_CALLIN )
         {
             /* number CPUs logically, starting from 1 (BSP is 0) */
             Dprintk("OK.\n");
@@ -609,7 +619,7 @@ static int do_boot_cpu(unsigned int apicid, int cpu)
             synchronize_tsc_master(cpu);
             Dprintk("CPU has booted.\n");
         }
-        else if ( cpu_state == CPU_STATE_DEAD )
+        else if ( smpboot_data[cpu].cpu_state == CPU_STATE_DEAD )
         {
             smp_rmb();
             rc = cpu_error;
@@ -680,7 +690,7 @@ unsigned long alloc_stub_page(unsigned int cpu, unsigned long *mfn)
 void cpu_exit_clear(unsigned int cpu)
 {
     cpu_uninit(cpu);
-    set_cpu_state(CPU_STATE_DEAD);
+    set_cpu_state(cpu, CPU_STATE_DEAD);
 }
 
 static int clone_mapping(const void *ptr, root_pgentry_t *rpt)
@@ -1158,6 +1168,9 @@ void __init smp_prepare_cpus(void)
     smpboot_data[0].stack_base = (void *)
              ((unsigned long)stack_start & ~(STACK_SIZE - 1));
 
+    /* Not really used anywhere, but set it just in case. */
+    set_cpu_state(0, CPU_STATE_ONLINE);
+
     set_nr_sockets();
 
     socket_cpumask = xzalloc_array(cpumask_t *, nr_sockets);
@@ -1264,7 +1277,7 @@ void __cpu_disable(void)
 {
     int cpu = smp_processor_id();
 
-    set_cpu_state(CPU_STATE_DYING);
+    set_cpu_state(cpu, CPU_STATE_DYING);
 
     local_irq_disable();
     clear_local_APIC();
@@ -1289,7 +1302,7 @@ void __cpu_die(unsigned int cpu)
     unsigned int i = 0;
     enum cpu_state seen_state;
 
-    while ( (seen_state = cpu_state) != CPU_STATE_DEAD )
+    while ( (seen_state = smpboot_data[cpu].cpu_state) != CPU_STATE_DEAD )
     {
         BUG_ON(seen_state != CPU_STATE_DYING);
         mdelay(100);
@@ -1391,7 +1404,7 @@ int __cpu_up(unsigned int cpu)
 
     time_latch_stamps();
 
-    set_cpu_state(CPU_STATE_ONLINE);
+    set_cpu_state(cpu, CPU_STATE_ONLINE);
     while ( !cpu_online(cpu) )
     {
         cpu_relax();
