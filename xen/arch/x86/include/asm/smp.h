@@ -42,6 +42,7 @@ extern void zap_low_mappings(void);
 struct x86_smpboot_cpu_data {
     void *stack_base;
     unsigned int apicid;
+    unsigned int cpu_state;
 };
 
 extern struct x86_smpboot_cpu_data smpboot_data[];
