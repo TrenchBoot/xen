@@ -317,28 +317,6 @@ void asmlinkage start_secondary(unsigned int cpu)
      * want to limit the things done here to the most necessary things.
      */
 
-    if ( ap_boot_method == AP_BOOT_TXT ) {
-        uint64_t misc_enable;
-        uint32_t my_apicid;
-        struct txt_sinit_mle_data *sinit_mle =
-              txt_sinit_mle_data_start(__va(read_txt_reg(TXTCR_HEAP_BASE)));
-
-        /* TXT released us with MONITOR disabled in IA32_MISC_ENABLE. */
-        rdmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
-        wrmsrl(MSR_IA32_MISC_ENABLE,
-               misc_enable | MSR_IA32_MISC_ENABLE_MONITOR_ENABLE);
-
-        /* get_apic_id() reads from x2APIC if it thinks it is enabled. */
-        x2apic_ap_setup();
-        my_apicid = get_apic_id();
-
-        while ( my_apicid != cpu_physical_id(cpu) ) {
-            asm volatile ("monitor; xor %0,%0; mwait"
-                          :: "a"(__va(sinit_mle->rlp_wakeup_addr)), "c"(0),
-                          "d"(0) : "memory");
-        }
-    }
-
     /* Critical region without IDT or TSS.  Any fault is deadly! */
 
     /* Wait until data set up by CPU_UP_PREPARE notifiers is ready. */
@@ -452,13 +430,16 @@ static int wake_aps_in_txt(void)
     struct txt_sinit_mle_data *sinit_mle =
               txt_sinit_mle_data_start(__va(read_txt_reg(TXTCR_HEAP_BASE)));
     uint32_t *wakeup_addr = __va(sinit_mle->rlp_wakeup_addr);
+    static uint32_t join[4] = {0};
 
-    uint32_t join[4] = {
-        trampoline_gdt[1],               /* GDT limit */
-        bootsym_phys(trampoline_gdt),    /* GDT base */
-        TXT_AP_BOOT_CS,                  /* CS selector, DS = CS+8 */
-        bootsym_phys(txt_ap_entry)       /* EIP */
-    };
+    /* Check if already started. */
+    if ( join[0] != 0 )
+        return -1;
+
+    join[0] = trampoline_gdt[1];             /* GDT limit */
+    join[1] = bootsym_phys(trampoline_gdt);  /* GDT base */
+    join[2] = TXT_AP_BOOT_CS;                /* CS selector, DS = CS+8 */
+    join[3] = bootsym_phys(txt_ap_entry);    /* EIP */
 
     write_txt_reg(TXTCR_MLE_JOIN, __pa(join));
 
