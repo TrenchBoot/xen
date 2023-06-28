@@ -346,8 +346,7 @@ static void tpm_hash_extend12(unsigned loc, uint8_t *buf, unsigned size,
         .pcrNum = swap32(pcr),
     };
 
-    if ( out_digest != NULL )
-        memcpy(cmd_rsp.extend_c.inDigest, out_digest, SHA1_DIGEST_SIZE);
+    memcpy(cmd_rsp.extend_c.inDigest, out_digest, SHA1_DIGEST_SIZE);
 
     send_cmd(loc, (uint8_t *)&cmd_rsp, sizeof(struct extend_cmd), &o_size);
 
@@ -407,9 +406,16 @@ void tpm_hash_extend(unsigned loc, unsigned pcr, uint8_t *buf, unsigned size,
 #endif
 
     if ( is_tpm12() ) {
+        uint8_t sha1_digest[SHA1_DIGEST_SIZE];
+
         struct txt_ev_log_container_12 *evt_log = evt_log_addr;
         void *entry_digest = create_log_event12(evt_log, evt_log_size, pcr,
                                                 type, log_data, log_data_size);
+
+        /* We still need to write computed hash somewhere. */
+        if ( entry_digest == NULL )
+            entry_digest = sha1_digest;
+
         tpm_hash_extend12(loc, buf, size, pcr, entry_digest);
     }
 
