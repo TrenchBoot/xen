@@ -321,6 +321,7 @@ extern void txt_restore_mtrrs(bool e820_verbose);
 #define TXT_EVTYPE_INITRD       0x602
 
 #define SHA1_DIGEST_SIZE        20
+#define SHA256_DIGEST_SIZE      32
 
 void tpm_hash_extend(unsigned loc, unsigned pcr, uint8_t *buf, unsigned size,
                      uint32_t type, uint8_t *log_data, unsigned log_data_size);
