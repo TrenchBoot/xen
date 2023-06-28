@@ -129,11 +129,16 @@ static void send_cmd(unsigned loc, uint8_t *buf, unsigned i_size,
 static inline bool is_tpm12(void)
 {
     /*
-     * If either INTF_CAPABILITY_x.interfaceVersion is 0 (TIS <= 1.21) or
-     * STS_x.tpmFamily is 0 we're dealing with TPM1.2.
+     * If one of these conditions is true:
+     *  - INTF_CAPABILITY_x.interfaceVersion is 0 (TIS <= 1.21)
+     *  - INTF_CAPABILITY_x.interfaceVersion is 2 (TIS == 1.3)
+     *  - STS_x.tpmFamily is 0
+     * we're dealing with TPM1.2.
      */
-     return ((tis_read32(TPM_INTF_CAPABILITY_(0)) & INTF_VERSION_MASK) == 0 ||
-             (tis_read32(TPM_STS_(0)) & TPM_FAMILY_MASK) == 0);
+    uint32_t intf_version = tis_read32(TPM_INTF_CAPABILITY_(0))
+                          & INTF_VERSION_MASK;
+    return (intf_version == 0x00000000 || intf_version == 0x20000000 ||
+            (tis_read32(TPM_STS_(0)) & TPM_FAMILY_MASK) == 0);
 }
 
 static inline void find_evt_log(void **evt_log, uint32_t *evt_log_size)
