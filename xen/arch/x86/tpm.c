@@ -92,10 +92,11 @@ static inline void tis_write8(unsigned reg, uint8_t val)
     *(volatile uint8_t *)__va(TPM_TIS_BASE + reg) = val;
 }
 
-/* TODO: check if locality was actually activated. */
 static inline void request_locality(unsigned loc)
 {
     tis_write8(TPM_ACCESS_(loc), ACCESS_REQUEST_USE);
+    /* Check that locality was actually activated. */
+    while ( (tis_read8(TPM_ACCESS_(loc)) & ACCESS_ACTIVE_LOCALITY) == 0 );
 }
 
 static inline void relinquish_locality(unsigned loc)
