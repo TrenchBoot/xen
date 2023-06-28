@@ -54,6 +54,8 @@ void *memcpy(void *dest, const void *src, size_t n)
 
 void sha1_hash(const uint8_t message[], size_t len,
                uint32_t hash[static SHA1_DIGEST_SIZE/sizeof(uint32_t)]);
+void sha256_hash(const uint8_t message[], size_t len,
+                 uint32_t hash[static SHA256_DIGEST_SIZE/sizeof(uint32_t)]);
 
 #endif  /* __EARLY_TPM__ */
 
@@ -151,14 +153,15 @@ static inline void find_evt_log(void **evt_log, uint32_t *evt_log_size)
     *evt_log_size = os_mle->evtlog_size;
 }
 
-/****************************** TPM1.2 specific *******************************/
-#define TPM_ORD_Extend              0x00000014
-#define TPM_ORD_SHA1Start           0x000000A0
-#define TPM_ORD_SHA1Update          0x000000A1
-#define TPM_ORD_SHA1CompleteExtend  0x000000A3
+/****************************** TPM1.2 & TPM2.0 *******************************/
 
-#define TPM_TAG_RQU_COMMAND         0x00C1
-#define TPM_TAG_RSP_COMMAND         0x00C4
+/*
+ * TPM1.2 is required to support commands of up to 1101 bytes, vendors rarely
+ * go above that. Limit maximum size of block of data to be hashed to 1024.
+ *
+ * TPM2.0 should support hashing of at least 1024 bytes.
+ */
+#define MAX_HASH_BLOCK      1024
 
 /* All fields of following structs are big endian. */
 struct tpm_cmd_hdr {
@@ -173,6 +176,17 @@ struct tpm_rsp_hdr {
     uint32_t    returnCode;
 } __packed;
 
+/****************************** TPM1.2 specific *******************************/
+
+#define TPM_ORD_Extend              0x00000014
+#define TPM_ORD_SHA1Start           0x000000A0
+#define TPM_ORD_SHA1Update          0x000000A1
+#define TPM_ORD_SHA1CompleteExtend  0x000000A3
+
+#define TPM_TAG_RQU_COMMAND         0x00C1
+#define TPM_TAG_RSP_COMMAND         0x00C4
+
+/* All fields of following structs are big endian. */
 struct extend_cmd {
     struct tpm_cmd_hdr h;
     uint32_t pcrNum;
@@ -238,11 +252,6 @@ struct txt_ev_log_container_12 {
 };
 
 #ifdef __EARLY_TPM__
-/*
- * TPM1.2 is required to support commands of up to 1101 bytes, vendors rarely
- * go above that. Limit maximum size of block of data to be hashed to 1024.
- */
-#define MAX_HASH_BLOCK      1024
 #define CMD_RSP_BUF_SIZE    (sizeof(struct sha1_update_cmd) + MAX_HASH_BLOCK)
 
 union cmd_rsp {
@@ -388,6 +397,344 @@ static void *create_log_event12(struct txt_ev_log_container_12 *evt_log,
 
 /************************** end of TPM1.2 specific ****************************/
 
+/****************************** TPM2.0 specific *******************************/
+
+/*
+ * These constants are for TPM2.0 but don't have a distinct prefix to match
+ * names in the specification.
+ */
+
+#define TPM_HT_PCR   0x00
+
+#define TPM_RH_NULL  0x40000007
+#define TPM_RS_PW    0x40000009
+
+#define HR_SHIFT     24
+#define HR_PCR       (TPM_HT_PCR << HR_SHIFT)
+
+#define TPM_ST_NO_SESSIONS  0x8001
+#define TPM_ST_SESSIONS     0x8002
+
+#define TPM_ALG_SHA1        0x0004
+#define TPM_ALG_SHA256      0x000b
+#define TPM_ALG_NULL        0x0010
+
+#define TPM2_PCR_Extend                 0x00000182
+#define TPM2_PCR_HashSequenceStart      0x00000186
+#define TPM2_PCR_SequenceUpdate         0x0000015C
+#define TPM2_PCR_EventSequenceComplete  0x00000185
+
+#define PUT_BYTES(p, bytes, size)  do {  \
+        memcpy((p), (bytes), (size));    \
+        (p) += (size);                   \
+    } while ( 0 )
+
+#define PUT_16BIT(p, data) do {          \
+        *(uint16_t *)(p) = swap16(data); \
+        (p) += 2;                        \
+    } while ( 0 )
+
+/* All fields of following structs are big endian. */
+struct tpm2_session_header {
+    uint32_t handle;
+    uint16_t nonceSize;
+    uint8_t nonce[0];
+    uint8_t attrs;
+    uint16_t hmacSize;
+    uint8_t hmac[0];
+} __packed;
+
+struct tpm2_extend_cmd {
+    struct tpm_cmd_hdr h;
+    uint32_t pcrHandle;
+    uint32_t sessionHdrSize;
+    struct tpm2_session_header pcrSession;
+    uint32_t hashCount;
+    uint8_t hashes[0];
+} __packed;
+
+struct tpm2_extend_rsp {
+    struct tpm_rsp_hdr h;
+} __packed;
+
+struct tpm2_sequence_start_cmd {
+    struct tpm_cmd_hdr h;
+    uint16_t hmacSize;
+    uint8_t hmac[0];
+    uint16_t hashAlg;
+} __packed;
+
+struct tpm2_sequence_start_rsp {
+    struct tpm_rsp_hdr h;
+    uint32_t sequenceHandle;
+} __packed;
+
+struct tpm2_sequence_update_cmd {
+    struct tpm_cmd_hdr h;
+    uint32_t sequenceHandle;
+    uint32_t sessionHdrSize;
+    struct tpm2_session_header session;
+    uint16_t dataSize;
+    uint8_t data[0];
+} __packed;
+
+struct tpm2_sequence_update_rsp {
+    struct tpm_rsp_hdr h;
+} __packed;
+
+struct tpm2_sequence_complete_cmd {
+    struct tpm_cmd_hdr h;
+    uint32_t pcrHandle;
+    uint32_t sequenceHandle;
+    uint32_t sessionHdrSize;
+    struct tpm2_session_header pcrSession;
+    struct tpm2_session_header sequenceSession;
+    uint16_t dataSize;
+    uint8_t data[0];
+} __packed;
+
+struct tpm2_sequence_complete_rsp {
+    struct tpm_rsp_hdr h;
+    uint32_t paramSize;
+    uint32_t hashCount;
+    uint8_t hashes[0];
+    /*
+     * Each hash is represented as:
+     * struct {
+     *     uint16_t hashAlg;
+     *     uint8_t hash[size of hashAlg];
+     * };
+     */
+} __packed;
+
+#ifdef __EARLY_TPM__
+
+union tpm2_cmd_rsp {
+    uint8_t b[sizeof(struct tpm2_sequence_update_cmd) + MAX_HASH_BLOCK];
+    struct tpm_cmd_hdr c;
+    struct tpm_rsp_hdr r;
+    struct tpm2_sequence_start_cmd start_c;
+    struct tpm2_sequence_start_rsp start_r;
+    struct tpm2_sequence_update_cmd update_c;
+    struct tpm2_sequence_update_rsp update_r;
+    struct tpm2_sequence_complete_cmd finish_c;
+    struct tpm2_sequence_complete_rsp finish_r;
+};
+
+static uint32_t tpm_hash_extend20(unsigned loc, uint8_t *buf, unsigned size,
+                                  unsigned pcr, uint8_t *sha1_digest,
+                                  uint8_t *sha256_digest)
+{
+    uint32_t seq_handle;
+    unsigned max_bytes = MAX_HASH_BLOCK;
+
+    union tpm2_cmd_rsp cmd_rsp;
+    unsigned o_size;
+    unsigned i;
+    uint8_t *p;
+    uint32_t rc;
+
+    cmd_rsp.start_c = (struct tpm2_sequence_start_cmd) {
+        .h.tag = swap16(TPM_ST_NO_SESSIONS),
+        .h.paramSize = swap32(sizeof(cmd_rsp.start_c)),
+        .h.ordinal = swap32(TPM2_PCR_HashSequenceStart),
+        .hashAlg = swap16(TPM_ALG_NULL), /* Compute all supported hashes. */
+    };
+
+    request_locality(loc);
+
+    o_size = sizeof(cmd_rsp);
+    send_cmd(loc, cmd_rsp.b, swap32(cmd_rsp.c.paramSize), &o_size);
+
+    if ( cmd_rsp.r.tag == swap16(TPM_ST_NO_SESSIONS) &&
+         cmd_rsp.r.paramSize == swap32(10) ) {
+        rc = swap32(cmd_rsp.r.returnCode);
+        if ( rc != 0 )
+            goto error;
+    }
+
+    seq_handle = swap32(cmd_rsp.start_r.sequenceHandle);
+
+    while ( size > 64 ) {
+        if ( size < max_bytes )
+            max_bytes = size & ~(64 - 1);
+
+        cmd_rsp.update_c = (struct tpm2_sequence_update_cmd) {
+            .h.tag = swap16(TPM_ST_SESSIONS),
+            .h.paramSize = swap32(sizeof(cmd_rsp.update_c) + max_bytes),
+            .h.ordinal = swap32(TPM2_PCR_SequenceUpdate),
+            .sequenceHandle = swap32(seq_handle),
+            .sessionHdrSize = swap32(sizeof(struct tpm2_session_header)),
+            .session.handle = swap32(TPM_RS_PW),
+            .dataSize = swap16(max_bytes),
+        };
+
+        memcpy(cmd_rsp.update_c.data, buf, max_bytes);
+
+        o_size = sizeof(cmd_rsp);
+        send_cmd(loc, cmd_rsp.b, swap32(cmd_rsp.c.paramSize), &o_size);
+
+        if ( cmd_rsp.r.tag == swap16(TPM_ST_NO_SESSIONS) &&
+             cmd_rsp.r.paramSize == swap32(10) ) {
+            rc = swap32(cmd_rsp.r.returnCode);
+            if ( rc != 0 )
+                goto error;
+        }
+
+        size -= max_bytes;
+        buf += max_bytes;
+    }
+
+    cmd_rsp.finish_c = (struct tpm2_sequence_complete_cmd) {
+        .h.tag = swap16(TPM_ST_SESSIONS),
+        .h.paramSize = swap32(sizeof(cmd_rsp.finish_c) + size),
+        .h.ordinal = swap32(TPM2_PCR_EventSequenceComplete),
+        .pcrHandle = swap32(HR_PCR + pcr),
+        .sequenceHandle = swap32(seq_handle),
+        .sessionHdrSize = swap32(sizeof(struct tpm2_session_header)*2),
+        .pcrSession.handle = swap32(TPM_RS_PW),
+        .sequenceSession.handle = swap32(TPM_RS_PW),
+        .dataSize = swap16(size),
+    };
+
+    memcpy(cmd_rsp.finish_c.data, buf, size);
+
+    o_size = sizeof(cmd_rsp);
+    send_cmd(loc, cmd_rsp.b, swap32(cmd_rsp.c.paramSize), &o_size);
+
+    if ( cmd_rsp.r.tag == swap16(TPM_ST_NO_SESSIONS) &&
+         cmd_rsp.r.paramSize == swap32(10) ) {
+        rc = swap32(cmd_rsp.r.returnCode);
+        if ( rc != 0 )
+            goto error;
+    }
+
+    p = cmd_rsp.finish_r.hashes;
+    for ( i = 0; i < swap32(cmd_rsp.finish_r.hashCount); ++i ) {
+        uint16_t hash_type;
+
+        hash_type = swap16(*(uint16_t *)p);
+        p += sizeof(uint16_t);
+
+        if ( hash_type == TPM_ALG_SHA1 ) {
+            if ( sha1_digest != NULL)
+                memcpy(sha1_digest, p, SHA1_DIGEST_SIZE);
+            p += SHA1_DIGEST_SIZE;
+        } else if ( hash_type == TPM_ALG_SHA256 ) {
+            if ( sha256_digest != NULL)
+                memcpy(sha256_digest, p, SHA256_DIGEST_SIZE);
+            p += SHA256_DIGEST_SIZE;
+        } else {
+            break;
+        }
+    }
+
+    rc = 0;
+
+error:
+    relinquish_locality(loc);
+    return rc;
+}
+
+#else
+
+union tpm2_cmd_rsp {
+    /* Enough for a couple of hashes. */
+    uint8_t b[sizeof(struct tpm2_extend_cmd) + 64];
+    struct tpm_cmd_hdr c;
+    struct tpm_rsp_hdr r;
+    struct tpm2_extend_cmd extend_c;
+    struct tpm2_extend_rsp extend_r;
+};
+
+static uint32_t tpm20_pcr_extend(unsigned loc, unsigned size,
+                                 uint32_t pcr_handle,
+                                 const uint8_t *sha1_digest,
+                                 const uint8_t *sha256_digest)
+{
+    union tpm2_cmd_rsp cmd_rsp;
+    unsigned o_size;
+    unsigned hash_count;
+    uint8_t *p;
+
+    cmd_rsp.extend_c = (struct tpm2_extend_cmd) {
+        .h.tag = swap16(TPM_ST_SESSIONS),
+        .h.ordinal = swap32(TPM2_PCR_Extend),
+        .pcrHandle = swap32(pcr_handle),
+        .sessionHdrSize = swap32(sizeof(struct tpm2_session_header)),
+        .pcrSession.handle = swap32(TPM_RS_PW),
+    };
+
+    hash_count = 0;
+    p = cmd_rsp.extend_c.hashes;
+
+    if ( sha1_digest != NULL ) {
+        ++hash_count;
+        PUT_16BIT(p, TPM_ALG_SHA1);
+        PUT_BYTES(p, sha1_digest, SHA1_DIGEST_SIZE);
+    }
+    if ( sha256_digest != NULL ) {
+        ++hash_count;
+        PUT_16BIT(p, TPM_ALG_SHA256);
+        PUT_BYTES(p, sha256_digest, SHA256_DIGEST_SIZE);
+    }
+
+    cmd_rsp.extend_c.hashCount = swap32(hash_count);
+
+    /* Fill in command size (size of the whole buffer). */
+    cmd_rsp.extend_c.h.paramSize = swap32(sizeof(cmd_rsp.extend_c) +
+                                          (p - cmd_rsp.extend_c.hashes)),
+
+    o_size = sizeof(cmd_rsp);
+    send_cmd(loc, cmd_rsp.b, swap32(cmd_rsp.c.paramSize), &o_size);
+
+    return swap32(cmd_rsp.r.returnCode);
+}
+
+static bool tpm20_has_sha1(unsigned loc)
+{
+    static int has_sha1 = -1;
+
+    if ( has_sha1 < 0 ) {
+        uint32_t rc;
+        uint8_t test_sha1_digest[SHA1_DIGEST_SIZE] = {0};
+
+        /* This is a valid way of checking hash support, using it to not
+         * implement TPM2_GetCapability(). */
+        rc = tpm20_pcr_extend(loc, /*size=*/0, /*pcr_handle=*/TPM_RH_NULL,
+                              test_sha1_digest, /*sha256_digest=*/NULL);
+        has_sha1 = (rc == 0);
+    }
+
+    return has_sha1 > 0;
+}
+
+static uint32_t tpm_hash_extend20(unsigned loc, uint8_t *buf, unsigned size,
+                                  unsigned pcr, uint8_t *sha1_digest,
+                                  uint8_t *sha256_digest)
+{
+    uint32_t rc;
+
+    request_locality(loc);
+
+    if ( tpm20_has_sha1(loc) )
+        sha1_hash(buf, size, (uint32_t *)sha1_digest);
+    else
+        sha1_digest = NULL;
+
+    sha256_hash(buf, size, (uint32_t *)sha256_digest);
+
+    rc = tpm20_pcr_extend(loc, size, HR_PCR + pcr, sha1_digest, sha256_digest);
+
+    relinquish_locality(loc);
+
+    return rc;
+}
+
+#endif /* __EARLY_TPM__ */
+
+/************************** end of TPM2.0 specific ****************************/
+
 void tpm_hash_extend(unsigned loc, unsigned pcr, uint8_t *buf, unsigned size,
                      uint32_t type, uint8_t *log_data, unsigned log_data_size)
 {
@@ -417,6 +764,18 @@ void tpm_hash_extend(unsigned loc, unsigned pcr, uint8_t *buf, unsigned size,
             entry_digest = sha1_digest;
 
         tpm_hash_extend12(loc, buf, size, pcr, entry_digest);
+    } else {
+        uint8_t sha1_digest[SHA1_DIGEST_SIZE];
+        uint8_t sha256_digest[SHA256_DIGEST_SIZE];
+        uint32_t rc;
+
+        rc = tpm_hash_extend20(loc, buf, size, pcr, sha1_digest, sha256_digest);
+        if ( rc != 0 ) {
+#ifndef __EARLY_TPM__
+            printk(XENLOG_ERR "Extending PCR%u failed with TPM error: 0x%08x\n",
+                   pcr, rc);
+#endif
+        }
     }
 
 #ifndef __EARLY_TPM__
