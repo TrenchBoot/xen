@@ -113,4 +113,44 @@ struct tpm2_sequence_complete_rsp {
      */
 } __packed;
 
+/* The structures below are for TPM event log and these are in little-endian. */
+
+struct tpm2_pcr_event_header {
+    uint32_t pcrIndex;
+    uint32_t eventType;
+    uint32_t digestCount;
+    uint8_t digests[0];
+    /*
+     * Each hash is represented as:
+     * struct {
+     *     uint16_t hashAlg;
+     *     uint8_t hash[size of hashAlg];
+     * };
+     */
+    /* uint32_t eventSize; */
+    /* uint8_t event[0]; */
+} __packed;
+
+struct tpm2_digest_sizes {
+    uint16_t algId;
+    uint16_t digestSize;
+} __packed;
+
+struct tpm2_spec_id_event {
+    uint32_t pcrIndex;
+    uint32_t eventType;
+    uint8_t digest[20];
+    uint32_t eventSize;
+    uint8_t signature[16];
+    uint32_t platformClass;
+    uint8_t specVersionMinor;
+    uint8_t specVersionMajor;
+    uint8_t specErrata;
+    uint8_t uintnSize;
+    uint32_t digestCount;
+    struct tpm2_digest_sizes digestSizes[0]; /* variable number of members */
+    /* uint8_t vendorInfoSize; */
+    /* uint8_t vendorInfo[vendorInfoSize]; */
+} __packed;
+
 #endif /* X86_TPM2_H */

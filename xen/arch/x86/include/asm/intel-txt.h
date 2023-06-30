@@ -215,6 +215,39 @@ struct txt_ev_log_container_12 {
     struct TPM12_PCREvent   PCREvents[];
 };
 
+/* Types of extended data. */
+#define TXT_HEAP_EXTDATA_TYPE_END                    0
+#define TXT_HEAP_EXTDATA_TYPE_BIOS_SPEC_VER          1
+#define TXT_HEAP_EXTDATA_TYPE_ACM                    2
+#define TXT_HEAP_EXTDATA_TYPE_STM                    3
+#define TXT_HEAP_EXTDATA_TYPE_CUSTOM                 4
+#define TXT_HEAP_EXTDATA_TYPE_MADT                   6
+#define TXT_HEAP_EXTDATA_TYPE_EVENT_LOG_POINTER2_1   8
+#define TXT_HEAP_EXTDATA_TYPE_MCFG                   9
+#define TXT_HEAP_EXTDATA_TYPE_TPR_REQ               13
+#define TXT_HEAP_EXTDATA_TYPE_DTPR                  14
+#define TXT_HEAP_EXTDATA_TYPE_CEDT                  15
+
+/*
+ * Self-describing data structure that is used for extensions to TXT heap
+ * tables.
+ */
+struct txt_ext_data_element {
+    uint32_t type;   /* One of TXT_HEAP_EXTDATA_TYPE_*. */
+    uint32_t size;   /* Size of the whole element (header + data), in bytes. */
+    uint8_t data[0];
+} __packed;
+
+/*
+ * Extended data describing TPM 2.0 log.
+ */
+struct heap_event_log_pointer_element2_1 {
+    uint64_t physical_address;
+    uint32_t allocated_event_container_size;
+    uint32_t first_record_offset;
+    uint32_t next_record_offset;
+} __packed;
+
 /*
  * Functions to extract data from the Intel TXT Heap Memory.
  *
@@ -281,6 +314,29 @@ static inline void *txt_init(void)
         txt_reset(SLAUNCH_ERROR_HEAP_BAD_OS2SINIT);
 
     return txt_heap;
+}
+
+/*
+ * Find the given element in the TXT heap extended data.
+ */
+static inline struct txt_ext_data_element *
+txt_find_ext_data_element(struct txt_os_sinit_data *os_sinit, uint32_t type)
+{
+    struct txt_ext_data_element *ext_elem;
+
+    ext_elem = (struct txt_ext_data_element *)
+        ((uint8_t *)os_sinit + sizeof(struct txt_os_sinit_data));
+
+    while ( ext_elem->type != TXT_HEAP_EXTDATA_TYPE_END )
+    {
+        if ( ext_elem->type == type )
+            return ext_elem;
+
+        ext_elem = (struct txt_ext_data_element *)
+            ((uint8_t *)ext_elem + ext_elem->size);
+    }
+
+    return NULL;
 }
 
 static inline bool is_in_pmr(const struct txt_os_sinit_data *os_sinit,

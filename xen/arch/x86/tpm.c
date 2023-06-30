@@ -642,19 +642,11 @@ static uint32_t tpm2_hash_extend(unsigned loc, const uint8_t *buf,
         }
 
         if ( hash->alg == TPM_ALG_SHA1 )
-        {
             sha1(hash->data, buf, size);
-        }
         else if ( hash->alg == TPM_ALG_SHA256 )
-        {
             sha2_256(hash->data, buf, size);
-        }
         else
-        {
-            /* This is called "OneDigest" in TXT Software Development Guide. */
-            memset(hash->data, 0, size);
-            hash->data[0] = 1;
-        }
+            /* create_log_event20() took care of initializing the digest. */;
 
         if ( supported_hashes.count == MAX_HASH_COUNT )
         {
@@ -674,6 +666,91 @@ static uint32_t tpm2_hash_extend(unsigned loc, const uint8_t *buf,
 }
 
 #endif /* __EARLY_SLAUNCH__ */
+
+static struct heap_event_log_pointer_element2_1 *find_evt_log_ext_data(void)
+{
+    struct txt_os_sinit_data *os_sinit;
+    struct txt_ext_data_element *ext_data;
+
+    os_sinit = txt_start(__va(txt_read(TXTCR_HEAP_BASE)), TXT_OS2SINIT);
+    ext_data = txt_find_ext_data_element(os_sinit,
+                                         TXT_HEAP_EXTDATA_TYPE_EVENT_LOG_POINTER2_1);
+    if ( ext_data == NULL )
+        return NULL;
+
+    return (struct heap_event_log_pointer_element2_1 *)ext_data->data;
+}
+
+static struct tpm2_log_hashes
+create_log_event20(struct tpm2_spec_id_event *evt_log, uint32_t evt_log_size,
+                   uint32_t pcr, uint32_t type, const uint8_t *data,
+                   unsigned data_size)
+{
+    struct tpm2_log_hashes log_hashes = {0};
+
+    struct heap_event_log_pointer_element2_1 *log_ext_data;
+    struct tpm2_pcr_event_header *new_entry;
+    uint32_t entry_size;
+    unsigned i;
+    uint8_t *p;
+
+    log_ext_data = find_evt_log_ext_data();
+    if ( log_ext_data == NULL )
+        return log_hashes;
+
+    entry_size = sizeof(*new_entry);
+    for ( i = 0; i < evt_log->digestCount; ++i )
+    {
+        entry_size += sizeof(uint16_t); /* hash type */
+        entry_size += evt_log->digestSizes[i].digestSize;
+    }
+    entry_size += sizeof(uint32_t); /* data size field */
+    entry_size += data_size;
+
+    /*
+     * Check if there is enough space left for new entry.
+     * Note: it is possible to introduce a gap in event log if entry with big
+     * data_size is followed by another entry with smaller data. Maybe we should
+     * cap the event log size in such case?
+     */
+    if ( log_ext_data->next_record_offset + entry_size > evt_log_size )
+        return log_hashes;
+
+    new_entry = (void *)((uint8_t *)evt_log + log_ext_data->next_record_offset);
+    log_ext_data->next_record_offset += entry_size;
+
+    new_entry->pcrIndex = pcr;
+    new_entry->eventType = type;
+    new_entry->digestCount = evt_log->digestCount;
+
+    p = &new_entry->digests[0];
+    for ( i = 0; i < evt_log->digestCount; ++i )
+    {
+        uint16_t alg = evt_log->digestSizes[i].algId;
+        uint16_t size = evt_log->digestSizes[i].digestSize;
+
+        *(uint16_t *)p = alg;
+        p += sizeof(uint16_t);
+
+        log_hashes.hashes[i].alg = alg;
+        log_hashes.hashes[i].size = size;
+        log_hashes.hashes[i].data = p;
+        p += size;
+
+        /* This is called "OneDigest" in TXT Software Development Guide. */
+        memset(log_hashes.hashes[i].data, 0, size);
+        log_hashes.hashes[i].data[0] = 1;
+    }
+    log_hashes.count = evt_log->digestCount;
+
+    *(uint32_t *)p = data_size;
+    p += sizeof(uint32_t);
+
+    if ( data && data_size > 0 )
+        memcpy(p, data, data_size);
+
+    return log_hashes;
+}
 
 /************************** end of TPM2.0 specific ****************************/
 
@@ -704,26 +781,15 @@ void tpm_hash_extend(unsigned loc, unsigned pcr, const uint8_t *buf,
             printk(XENLOG_ERR "Extending PCR%u failed\n", pcr);
 #endif
         }
-    } else {
-        uint8_t sha1_digest[SHA1_DIGEST_SIZE];
-        uint8_t sha256_digest[SHA2_256_DIGEST_SIZE];
+    }
+    else
+    {
         uint32_t rc;
 
-        struct tpm2_log_hashes log_hashes = {
-            .count = 2,
-            .hashes = {
-                {
-                    .alg = TPM_ALG_SHA1,
-                    .size = SHA1_DIGEST_SIZE,
-                    .data = sha1_digest,
-                },
-                {
-                    .alg = TPM_ALG_SHA256,
-                    .size = SHA2_256_DIGEST_SIZE,
-                    .data = sha256_digest,
-                },
-            },
-        };
+        struct tpm2_spec_id_event *evt_log = __va(evt_log_paddr);
+        struct tpm2_log_hashes log_hashes =
+            create_log_event20(evt_log, evt_log_size, pcr, type, log_data,
+                               log_data_size);
 
         rc = tpm2_hash_extend(loc, buf, size, pcr, &log_hashes);
         if ( rc != 0 )
