@@ -39,7 +39,7 @@ void *memcpy(void *dest, const void *src, size_t n)
   const uint8_t *s = src;
   uint8_t *d = dest;
 
-  while (n--)
+  while ( n-- )
     *d++ = *s++;
 
   return dest;
@@ -389,7 +389,7 @@ static void *create_log_event12(struct txt_ev_log_container_12 *evt_log,
     new_entry->Type = type;
     new_entry->Size = data_size;
 
-    if (data && data_size > 0)
+    if ( data && data_size > 0 )
         memcpy(new_entry->Data, data, data_size);
 
     return new_entry->Digest;
@@ -647,8 +647,7 @@ union tpm2_cmd_rsp {
     struct tpm2_extend_rsp extend_r;
 };
 
-static uint32_t tpm20_pcr_extend(unsigned loc, unsigned size,
-                                 uint32_t pcr_handle,
+static uint32_t tpm20_pcr_extend(unsigned loc, uint32_t pcr_handle,
                                  const uint8_t *sha1_digest,
                                  const uint8_t *sha256_digest)
 {
@@ -701,8 +700,8 @@ static bool tpm20_has_sha1(unsigned loc)
 
         /* This is a valid way of checking hash support, using it to not
          * implement TPM2_GetCapability(). */
-        rc = tpm20_pcr_extend(loc, /*size=*/0, /*pcr_handle=*/TPM_RH_NULL,
-                              test_sha1_digest, /*sha256_digest=*/NULL);
+        rc = tpm20_pcr_extend(loc, /*pcr_handle=*/TPM_RH_NULL, test_sha1_digest,
+                              /*sha256_digest=*/NULL);
         has_sha1 = (rc == 0);
     }
 
@@ -724,7 +723,7 @@ static uint32_t tpm_hash_extend20(unsigned loc, uint8_t *buf, unsigned size,
 
     sha256_hash(buf, size, (uint32_t *)sha256_digest);
 
-    rc = tpm20_pcr_extend(loc, size, HR_PCR + pcr, sha1_digest, sha256_digest);
+    rc = tpm20_pcr_extend(loc, HR_PCR + pcr, sha1_digest, sha256_digest);
 
     relinquish_locality(loc);
 
@@ -748,8 +747,8 @@ void tpm_hash_extend(unsigned loc, unsigned pcr, uint8_t *buf, unsigned size,
      * Low mappings are destroyed somewhere during the boot process, it includes
      * event log (marked as reserved by protect_txt_mem_regions().
      */
-     map_pages_to_xen((unsigned long)evt_log_addr, maddr_to_mfn(__pa(evt_log_addr)),
-                      PFN_UP(evt_log_size), __PAGE_HYPERVISOR_RW);
+    map_pages_to_xen((unsigned long)evt_log_addr, maddr_to_mfn(__pa(evt_log_addr)),
+                     PFN_UP(evt_log_size), __PAGE_HYPERVISOR_RW);
 #endif
 
     if ( is_tpm12() ) {
