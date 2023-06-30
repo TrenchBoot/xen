@@ -34,6 +34,16 @@ asm (
 #endif
 #define __va(x)     _p(x)
 
+void *memset(void *dest, int c, size_t n)
+{
+  uint8_t *d = dest;
+
+  while ( n-- )
+    *d++ = c;
+
+  return dest;
+}
+
 void *memcpy(void *dest, const void *src, size_t n)
 {
   const uint8_t *s = src;
@@ -520,6 +530,60 @@ struct tpm2_sequence_complete_rsp {
      */
 } __packed;
 
+/*
+ * These two structure are for convenience, they don't correspond to anything in
+ * any spec.
+ */
+struct tpm2_log_hash {
+    uint16_t alg;  /* TPM_ALG_* */
+    uint16_t size;
+    uint8_t *data; /* Non-owning reference to a buffer inside log entry. */
+};
+/* Should be more than enough for now and awhile in the future. */
+#define MAX_HASH_COUNT 8
+struct tpm2_log_hashes {
+    uint32_t count;
+    struct tpm2_log_hash hashes[MAX_HASH_COUNT];
+};
+
+struct tpm2_pcr_event_header {
+    uint32_t pcrIndex;
+    uint32_t eventType;
+    uint32_t digestCount;
+    uint8_t digests[0];
+    /*
+     * Each hash is represented as:
+     * struct {
+     *     uint16_t hashAlg;
+     *     uint8_t hash[size of hashAlg];
+     * };
+     */
+    /* uint32_t eventSize; */
+    /* uint8_t event[0]; */
+} __packed;
+
+struct tpm2_digest_sizes {
+    uint16_t algId;
+    uint16_t digestSize;
+} __packed;
+
+struct tpm2_spec_id_event {
+    uint32_t pcrIndex;
+    uint32_t eventType;
+    uint8_t digest[20];
+    uint32_t eventSize;
+    uint8_t signature[16];
+    uint32_t platformClass;
+    uint8_t specVersionMinor;
+    uint8_t specVersionMajor;
+    uint8_t specErrata;
+    uint8_t uintnSize;
+    uint32_t digestCount;
+    struct tpm2_digest_sizes digestSizes[0]; /* variable number of members */
+    /* uint8_t vendorInfoSize; */
+    /* uint8_t vendorInfo[vendorInfoSize]; */
+} __packed;
+
 #ifdef __EARLY_TPM__
 
 union tpm2_cmd_rsp {
@@ -535,8 +599,8 @@ union tpm2_cmd_rsp {
 };
 
 static uint32_t tpm_hash_extend20(unsigned loc, uint8_t *buf, unsigned size,
-                                  unsigned pcr, uint8_t *sha1_digest,
-                                  uint8_t *sha256_digest)
+                                  unsigned pcr,
+                                  struct tpm2_log_hashes *log_hashes)
 {
     uint32_t seq_handle;
     unsigned max_bytes = MAX_HASH_BLOCK;
@@ -624,20 +688,23 @@ static uint32_t tpm_hash_extend20(unsigned loc, uint8_t *buf, unsigned size,
 
     p = cmd_rsp.finish_r.hashes;
     for ( i = 0; i < swap32(cmd_rsp.finish_r.hashCount); ++i ) {
+        unsigned j;
         uint16_t hash_type;
 
         hash_type = swap16(*(uint16_t *)p);
         p += sizeof(uint16_t);
 
-        if ( hash_type == TPM_ALG_SHA1 ) {
-            if ( sha1_digest != NULL)
-                memcpy(sha1_digest, p, SHA1_DIGEST_SIZE);
-            p += SHA1_DIGEST_SIZE;
-        } else if ( hash_type == TPM_ALG_SHA256 ) {
-            if ( sha256_digest != NULL)
-                memcpy(sha256_digest, p, SHA256_DIGEST_SIZE);
-            p += SHA256_DIGEST_SIZE;
-        } else {
+        for ( j = 0; j < log_hashes->count; ++j ) {
+            struct tpm2_log_hash *hash = &log_hashes->hashes[j];
+            if ( hash->alg == hash_type ) {
+                memcpy(hash->data, p, hash->size);
+                p += hash->size;
+                break;
+            }
+        }
+
+        if ( j == log_hashes->count ) {
+            /* Can't continue parsing without knowing hash size. */
             break;
         }
     }
@@ -652,8 +719,8 @@ error:
 #else
 
 union tpm2_cmd_rsp {
-    /* Enough for a couple of hashes. */
-    uint8_t b[sizeof(struct tpm2_extend_cmd) + 64];
+    /* Enough space for multiple hashes. */
+    uint8_t b[sizeof(struct tpm2_extend_cmd) + 1024];
     struct tpm_cmd_hdr c;
     struct tpm_rsp_hdr r;
     struct tpm2_extend_cmd extend_c;
@@ -661,12 +728,11 @@ union tpm2_cmd_rsp {
 };
 
 static uint32_t tpm20_pcr_extend(unsigned loc, uint32_t pcr_handle,
-                                 const uint8_t *sha1_digest,
-                                 const uint8_t *sha256_digest)
+                                 const struct tpm2_log_hashes *log_hashes)
 {
     union tpm2_cmd_rsp cmd_rsp;
     unsigned o_size;
-    unsigned hash_count;
+    unsigned i;
     uint8_t *p;
 
     cmd_rsp.extend_c = (struct tpm2_extend_cmd) {
@@ -675,23 +741,25 @@ static uint32_t tpm20_pcr_extend(unsigned loc, uint32_t pcr_handle,
         .pcrHandle = swap32(pcr_handle),
         .sessionHdrSize = swap32(sizeof(struct tpm2_session_header)),
         .pcrSession.handle = swap32(TPM_RS_PW),
+        .hashCount = swap32(log_hashes->count),
     };
 
-    hash_count = 0;
     p = cmd_rsp.extend_c.hashes;
+    for ( i = 0; i < log_hashes->count; ++i ) {
+        const struct tpm2_log_hash *hash = &log_hashes->hashes[i];
 
-    if ( sha1_digest != NULL ) {
-        ++hash_count;
-        PUT_16BIT(p, TPM_ALG_SHA1);
-        PUT_BYTES(p, sha1_digest, SHA1_DIGEST_SIZE);
-    }
-    if ( sha256_digest != NULL ) {
-        ++hash_count;
-        PUT_16BIT(p, TPM_ALG_SHA256);
-        PUT_BYTES(p, sha256_digest, SHA256_DIGEST_SIZE);
-    }
+        if ( p + sizeof(uint16_t) + hash->size > &cmd_rsp.b[sizeof(cmd_rsp)] ) {
+            printk(XENLOG_ERR "Hit TPM message size implementation limit: %ld\n",
+                   sizeof(cmd_rsp));
+            return -1;
+        }
 
-    cmd_rsp.extend_c.hashCount = swap32(hash_count);
+        *(uint16_t *)p = swap16(hash->alg);
+        p += sizeof(uint16_t);
+
+        memcpy(p, hash->data, hash->size);
+        p += hash->size;
+    }
 
     /* Fill in command size (size of the whole buffer). */
     cmd_rsp.extend_c.h.paramSize = swap32(sizeof(cmd_rsp.extend_c) +
@@ -703,47 +771,158 @@ static uint32_t tpm20_pcr_extend(unsigned loc, uint32_t pcr_handle,
     return swap32(cmd_rsp.r.returnCode);
 }
 
-static bool tpm20_has_sha1(unsigned loc)
+static bool tpm_supports_hash(unsigned loc, const struct tpm2_log_hash *hash)
 {
-    static int has_sha1 = -1;
+    uint32_t rc;
+    struct tpm2_log_hashes hashes = {
+        .count = 1,
+        .hashes[0] = *hash,
+    };
 
-    if ( has_sha1 < 0 ) {
-        uint32_t rc;
-        uint8_t test_sha1_digest[SHA1_DIGEST_SIZE] = {0};
+    /* This is a valid way of checking hash support, using it to not implement
+     * TPM2_GetCapability(). */
+    rc = tpm20_pcr_extend(loc, /*pcr_handle=*/TPM_RH_NULL, &hashes);
 
-        /* This is a valid way of checking hash support, using it to not
-         * implement TPM2_GetCapability(). */
-        rc = tpm20_pcr_extend(loc, /*pcr_handle=*/TPM_RH_NULL, test_sha1_digest,
-                              /*sha256_digest=*/NULL);
-        has_sha1 = (rc == 0);
-    }
-
-    return has_sha1 > 0;
+    return rc == 0;
 }
 
 static uint32_t tpm_hash_extend20(unsigned loc, uint8_t *buf, unsigned size,
-                                  unsigned pcr, uint8_t *sha1_digest,
-                                  uint8_t *sha256_digest)
+                                  unsigned pcr,
+                                  const struct tpm2_log_hashes *log_hashes)
 {
     uint32_t rc;
+    unsigned i;
+    unsigned j;
+    struct tpm2_log_hashes supported_hashes = {0};
 
     request_locality(loc);
 
-    if ( tpm20_has_sha1(loc) )
-        sha1_hash(buf, size, (uint32_t *)sha1_digest);
-    else
-        sha1_digest = NULL;
+    j = 0;
+    for ( i = 0; i < log_hashes->count; ++i ) {
+        const struct tpm2_log_hash *hash = &log_hashes->hashes[i];
+        if ( !tpm_supports_hash(loc, hash) ) {
+            printk(XENLOG_WARNING "Skipped hash unsupported by TPM: %d\n",
+                   hash->alg);
+            continue;
+        }
 
-    sha256_hash(buf, size, (uint32_t *)sha256_digest);
+        if ( hash->alg == TPM_ALG_SHA1 )
+            sha1_hash(buf, size, (uint32_t *)hash->data);
+        else if ( hash->alg == TPM_ALG_SHA256 )
+            sha256_hash(buf, size, (uint32_t *)hash->data);
+        else
+            /* create_log_event20() took take of initializing the digest. */;
 
-    rc = tpm20_pcr_extend(loc, HR_PCR + pcr, sha1_digest, sha256_digest);
+        if ( supported_hashes.count == MAX_HASH_COUNT ) {
+            printk(XENLOG_ERR "Hit hash count implementation limit: %d\n",
+                   MAX_HASH_COUNT);
+            return -1;
+        }
 
+        supported_hashes.hashes[supported_hashes.count] = *hash;
+        ++supported_hashes.count;
+    }
+
+    rc = tpm20_pcr_extend(loc, HR_PCR + pcr, &supported_hashes);
     relinquish_locality(loc);
 
     return rc;
 }
 
 #endif /* __EARLY_TPM__ */
+
+static struct heap_event_log_pointer_element2_1 *find_evt_log_ext_data(void)
+{
+    struct txt_os_sinit_data *os_sinit;
+    struct txt_ext_data_element *ext_data;
+
+    os_sinit = txt_os_sinit_data_start(__va(read_txt_reg(TXTCR_HEAP_BASE)));
+    ext_data = (void *)((uint8_t *)os_sinit + sizeof(*os_sinit));
+
+    /*
+     * Find TXT_HEAP_EXTDATA_TYPE_EVENT_LOG_POINTER2_1 which is necessary to
+     * know where to put the next entry.
+     */
+    while ( ext_data->type != TXT_HEAP_EXTDATA_TYPE_END ) {
+        if ( ext_data->type == TXT_HEAP_EXTDATA_TYPE_EVENT_LOG_POINTER2_1 )
+            break;
+        ext_data = (void *)&ext_data->data[ext_data->size];
+    }
+
+    if ( ext_data->type == TXT_HEAP_EXTDATA_TYPE_END )
+        return NULL;
+
+    return (void *)&ext_data->data[0];
+}
+
+static struct tpm2_log_hashes
+create_log_event20(struct tpm2_spec_id_event *evt_log, uint32_t evt_log_size,
+                   uint32_t pcr, uint32_t type, uint8_t *data,
+                   unsigned data_size)
+{
+    struct tpm2_log_hashes log_hashes = {0};
+
+    struct heap_event_log_pointer_element2_1 *log_ext_data;
+    struct tpm2_pcr_event_header *new_entry;
+    uint32_t entry_size;
+    unsigned i;
+    uint8_t *p;
+
+    log_ext_data = find_evt_log_ext_data();
+    if ( log_ext_data == NULL )
+        return log_hashes;
+
+    entry_size = sizeof(*new_entry);
+    for ( i = 0; i < evt_log->digestCount; ++i ) {
+        entry_size += sizeof(uint16_t); /* hash type */
+        entry_size += evt_log->digestSizes[i].digestSize;
+    }
+    entry_size += sizeof(uint32_t); /* data size field */
+    entry_size += data_size;
+
+    /*
+     * Check if there is enough space left for new entry.
+     * Note: it is possible to introduce a gap in event log if entry with big
+     * data_size is followed by another entry with smaller data. Maybe we should
+     * cap the event log size in such case?
+     */
+    if ( log_ext_data->next_record_offset + entry_size > evt_log_size )
+        return log_hashes;
+
+    new_entry = (void *)((uint8_t *)evt_log + log_ext_data->next_record_offset);
+    log_ext_data->next_record_offset += entry_size;
+
+    new_entry->pcrIndex = pcr;
+    new_entry->eventType = type;
+    new_entry->digestCount = evt_log->digestCount;
+
+    p = &new_entry->digests[0];
+    for ( i = 0; i < evt_log->digestCount; ++i ) {
+        uint16_t alg = evt_log->digestSizes[i].algId;
+        uint16_t size = evt_log->digestSizes[i].digestSize;
+
+        *(uint16_t *)p = alg;
+        p += sizeof(uint16_t);
+
+        log_hashes.hashes[i].alg = alg;
+        log_hashes.hashes[i].size = size;
+        log_hashes.hashes[i].data = p;
+        p += size;
+
+        /* This is called "OneDigest" in TXT Software Development Guide. */
+        memset(log_hashes.hashes[i].data, 0, size);
+        log_hashes.hashes[i].data[0] = 1;
+    }
+    log_hashes.count = evt_log->digestCount;
+
+    *(uint32_t *)p = data_size;
+    p += sizeof(uint32_t);
+
+    if ( data && data_size > 0 )
+        memcpy(p, data, data_size);
+
+    return log_hashes;
+}
 
 /************************** end of TPM2.0 specific ****************************/
 
@@ -777,11 +956,14 @@ void tpm_hash_extend(unsigned loc, unsigned pcr, uint8_t *buf, unsigned size,
 
         tpm_hash_extend12(loc, buf, size, pcr, entry_digest);
     } else {
-        uint8_t sha1_digest[SHA1_DIGEST_SIZE];
-        uint8_t sha256_digest[SHA256_DIGEST_SIZE];
         uint32_t rc;
 
-        rc = tpm_hash_extend20(loc, buf, size, pcr, sha1_digest, sha256_digest);
+        struct tpm2_spec_id_event *evt_log = evt_log_addr;
+        struct tpm2_log_hashes log_hashes =
+            create_log_event20(evt_log, evt_log_size, pcr, type, log_data,
+                               log_data_size);
+
+        rc = tpm_hash_extend20(loc, buf, size, pcr, &log_hashes);
         if ( rc != 0 ) {
 #ifndef __EARLY_TPM__
             printk(XENLOG_ERR "Extending PCR%u failed with TPM error: 0x%08x\n",
