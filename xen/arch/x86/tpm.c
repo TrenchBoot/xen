@@ -287,7 +287,7 @@ union cmd_rsp {
     uint8_t buf[CMD_RSP_BUF_SIZE];
 };
 
-static void tpm_hash_extend12(unsigned loc, uint8_t *buf, unsigned size,
+static void tpm12_hash_extend(unsigned loc, uint8_t *buf, unsigned size,
                               unsigned pcr, uint8_t *out_digest)
 {
     union cmd_rsp cmd_rsp;
@@ -361,7 +361,7 @@ union cmd_rsp {
     struct extend_rsp extend_r;
 };
 
-static void tpm_hash_extend12(unsigned loc, uint8_t *buf, unsigned size,
+static void tpm12_hash_extend(unsigned loc, uint8_t *buf, unsigned size,
                               unsigned pcr, uint8_t *out_digest)
 {
     union cmd_rsp cmd_rsp;
@@ -598,9 +598,9 @@ union tpm2_cmd_rsp {
     struct tpm2_sequence_complete_rsp finish_r;
 };
 
-static uint32_t tpm_hash_extend20(unsigned loc, uint8_t *buf, unsigned size,
-                                  unsigned pcr,
-                                  struct tpm2_log_hashes *log_hashes)
+static uint32_t tpm2_hash_extend(unsigned loc, uint8_t *buf, unsigned size,
+                                 unsigned pcr,
+                                 struct tpm2_log_hashes *log_hashes)
 {
     uint32_t seq_handle;
     unsigned max_bytes = MAX_HASH_BLOCK;
@@ -786,9 +786,9 @@ static bool tpm_supports_hash(unsigned loc, const struct tpm2_log_hash *hash)
     return rc == 0;
 }
 
-static uint32_t tpm_hash_extend20(unsigned loc, uint8_t *buf, unsigned size,
-                                  unsigned pcr,
-                                  const struct tpm2_log_hashes *log_hashes)
+static uint32_t tpm2_hash_extend(unsigned loc, uint8_t *buf, unsigned size,
+                                 unsigned pcr,
+                                 const struct tpm2_log_hashes *log_hashes)
 {
     uint32_t rc;
     unsigned i;
@@ -954,7 +954,7 @@ void tpm_hash_extend(unsigned loc, unsigned pcr, uint8_t *buf, unsigned size,
         if ( entry_digest == NULL )
             entry_digest = sha1_digest;
 
-        tpm_hash_extend12(loc, buf, size, pcr, entry_digest);
+        tpm12_hash_extend(loc, buf, size, pcr, entry_digest);
     } else {
         uint32_t rc;
 
@@ -963,7 +963,7 @@ void tpm_hash_extend(unsigned loc, unsigned pcr, uint8_t *buf, unsigned size,
             create_log_event20(evt_log, evt_log_size, pcr, type, log_data,
                                log_data_size);
 
-        rc = tpm_hash_extend20(loc, buf, size, pcr, &log_hashes);
+        rc = tpm2_hash_extend(loc, buf, size, pcr, &log_hashes);
         if ( rc != 0 ) {
 #ifndef __EARLY_TPM__
             printk(XENLOG_ERR "Extending PCR%u failed with TPM error: 0x%08x\n",
