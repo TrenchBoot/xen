@@ -1,0 +1,17 @@
+name: Test build and package QubesOS RPMs
+
+on:
+  push:
+    branches:
+      - 'aem*'
+    tags:
+      - '*'
+
+jobs:
+  qubes-dom0-package:
+    uses: TrenchBoot/.github/.github/workflows/qubes-dom0-package.yml@qubes-os-main
+    with:
+      base-commit: '026c9fa29716b0ff0f8b7c687908e71ba29cf239'
+      patch-start: 1300
+      qubes-component: 'vmm-xen'
+      spec-pattern: '/^Patch1202:/'
