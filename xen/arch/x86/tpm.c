@@ -109,18 +109,31 @@ static inline void relinquish_locality(unsigned loc)
 static void send_cmd(unsigned loc, uint8_t *buf, unsigned i_size,
                      unsigned *o_size)
 {
+    /*
+     * Value of "data available" bit counts only when "valid" field is set as
+     * well.
+     */
+    const unsigned data_avail = STS_VALID | STS_DATA_AVAIL;
+
     unsigned i;
 
-    tis_write8(TPM_STS_(loc), STS_COMMAND_READY);
+    /* Make sure TPM can accept a command. */
+    if ( (tis_read8(TPM_STS_(loc)) & STS_COMMAND_READY) == 0 ) {
+        /* Abort current command. */
+        tis_write8(TPM_STS_(loc), STS_COMMAND_READY);
+        /* Wait until TPM is ready for a new one. */
+        while ( (tis_read8(TPM_STS_(loc)) & STS_COMMAND_READY) == 0 );
+    }
 
     for ( i = 0; i < i_size; i++ )
         tis_write8(TPM_DATA_FIFO_(loc), buf[i]);
 
     tis_write8(TPM_STS_(loc), STS_TPM_GO);
 
-    while ( (tis_read8(TPM_STS_(loc)) & STS_DATA_AVAIL) == 0 );
+    /* Wait for the first byte of response. */
+    while ( (tis_read8(TPM_STS_(loc)) & data_avail) != data_avail);
 
-    for ( i = 0; i < *o_size && tis_read8(TPM_STS_(loc)) & STS_DATA_AVAIL; i++ )
+    for ( i = 0; i < *o_size && tis_read8(TPM_STS_(loc)) & data_avail; i++ )
         buf[i] = tis_read8(TPM_DATA_FIFO_(loc));
 
     if ( i < *o_size )
