@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - 'aem*'
+    tags:
+      - '*'
   pull_request_target:
     branches: # this is to avoid running the workflow twice in a PR
       - 'aem*'
