@@ -60,6 +60,7 @@
 #include <asm/prot-key.h>
 #include <asm/pv/domain.h>
 #include <asm/intel_txt.h>
+#include <asm/tpm.h>
 
 /* opt_nosmp: If true, secondary processors are ignored. */
 static bool __initdata opt_nosmp;
@@ -1300,6 +1301,9 @@ void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
     {
         /* Prepare for TXT-related code. */
         map_txt_mem_regions();
+        /* Measure SLRT here because it gets used by init_e820(), the rest is
+         * measured below by tpm_process_drtm_policy(). */
+        tpm_measure_slrt();
         /* Reserve TXT heap and SINIT. */
         protect_txt_mem_regions();
     }
@@ -1321,6 +1325,12 @@ void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
 
     /* Create a temporary copy of the E820 map. */
     memcpy(&boot_e820, &e820, sizeof(e820));
+
+    /* Process all yet unmeasured DRTM entries after E820 initialization to not
+     * do this while memory is uncached (too slow). This must also happen before
+     * fields of Multiboot modules change their format below. */
+    if ( slaunch_active )
+        tpm_process_drtm_policy(mbi);
 
     /* Early kexec reservation (explicit static start address). */
     nr_pages = 0;
