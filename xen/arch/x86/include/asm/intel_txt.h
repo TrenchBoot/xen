@@ -2,6 +2,8 @@
  * TXT configuration registers (offsets from TXT_{PUB, PRIV}_CONFIG_REGS_BASE)
  */
 
+#include <xen/multiboot.h>
+
 #define TXT_PUB_CONFIG_REGS_BASE	0xfed30000
 #define TXT_PRIV_CONFIG_REGS_BASE	0xfed20000
 
@@ -363,19 +365,33 @@ extern void map_txt_mem_regions(void);
 extern void protect_txt_mem_regions(void);
 extern void txt_restore_mtrrs(bool e820_verbose);
 
-#define DRTM_LOC                2
-#define DRTM_CODE_PCR           17
-#define DRTM_DATA_PCR           18
+#define DRTM_LOC                   2
+#define DRTM_CODE_PCR              17
+#define DRTM_DATA_PCR              18
 
-/* TXT-defined use 0x4xx, TrenchBoot in Linux uses 0x5xx, use 0x6xx here. */
-#define TXT_EVTYPE_MBI          0x600
-#define TXT_EVTYPE_KERNEL       0x601
-#define TXT_EVTYPE_INITRD       0x602
+/*
+ * Secure Launch event log entry type. The TXT specification defines the
+ * base event value as 0x400 for DRTM values.
+ */
+#define TXT_EVTYPE_BASE	           0x400
+#define TXT_EVTYPE_SLAUNCH         (TXT_EVTYPE_BASE + 0x102)
+#define TXT_EVTYPE_SLAUNCH_START   (TXT_EVTYPE_BASE + 0x103)
+#define TXT_EVTYPE_SLAUNCH_END     (TXT_EVTYPE_BASE + 0x104)
 
-#define SHA1_DIGEST_SIZE        20
-#define SHA256_DIGEST_SIZE      32
+#define SHA1_DIGEST_SIZE           20
+#define SHA256_DIGEST_SIZE         32
 
 void tpm_hash_extend(unsigned loc, unsigned pcr, uint8_t *buf, unsigned size,
                      uint32_t type, uint8_t *log_data, unsigned log_data_size);
+
+/* Measures essential parts of SLR table before making use of them. */
+void tpm_measure_slrt(void);
+
+/* Takes measurements of DRTM policy entries except for MBI and SLRT which
+ * should have been measured by the time this is called. Also performs sanity
+ * checks of the policy and panics on failure. In particular, the function
+ * verifies that DRTM is consistent with MultibootInfo (MBI) (the MBI address
+ * is assumed to be virtual). */
+void tpm_process_drtm_policy(const multiboot_info_t *mbi);
 
 #endif /* __ASSEMBLY__ */
