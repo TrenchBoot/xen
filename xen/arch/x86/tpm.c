@@ -29,6 +29,7 @@ asm (
 
 #include "boot/defs.h"
 #include "include/asm/intel_txt.h"
+#include <xen/slr_table.h>
 #ifdef __va
 #error "__va defined in non-paged mode!"
 #endif
@@ -165,15 +166,6 @@ static inline bool is_tpm12(void)
                           & INTF_VERSION_MASK;
     return (intf_version == 0x00000000 || intf_version == 0x20000000 ||
             (tis_read32(TPM_STS_(0)) & TPM_FAMILY_MASK) == 0);
-}
-
-static inline void find_evt_log(void **evt_log, uint32_t *evt_log_size)
-{
-    struct txt_os_mle_data *os_mle;
-    os_mle = txt_os_mle_data_start(__va(read_txt_reg(TXTCR_HEAP_BASE)));
-
-    *evt_log = __va(os_mle->evtlog_addr);
-    *evt_log_size = os_mle->evtlog_size;
 }
 
 /****************************** TPM1.2 & TPM2.0 *******************************/
@@ -933,6 +925,7 @@ void tpm_hash_extend(unsigned loc, unsigned pcr, uint8_t *buf, unsigned size,
     uint32_t evt_log_size;
 
     find_evt_log(&evt_log_addr, &evt_log_size);
+    evt_log_addr = __va(evt_log_addr);
 
 #ifndef __EARLY_TPM__
     /*

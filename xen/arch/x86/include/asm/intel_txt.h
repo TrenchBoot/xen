@@ -70,8 +70,6 @@
 #define SL_ERROR_TPM_UNKNOWN_DIGEST	0xc0008020
 #define SL_ERROR_TPM_INVALID_EVENT	0xc0008021
 
-#define TXT_OS_MLE_MAX_VARIABLE_MTRRS	32
-
 #define SLAUNCH_BOOTLOADER_MAGIC	0x4c534254
 
 #define TXT_AP_BOOT_CS			0x0030
@@ -92,6 +90,8 @@ extern uint32_t trampoline_gdt[];
 #include <asm/page.h>	// __va()
 #define _txt(x) __va(x)
 #endif
+
+#include <xen/slr_table.h>
 
 /*
  * Always use private space as some of registers are either read-only or not
@@ -121,31 +121,15 @@ static inline void txt_reset(uint32_t error)
 }
 
 /*
- * Secure Launch defined MTRR saving structures
- */
-struct txt_mtrr_pair {
-	uint64_t mtrr_physbase;
-	uint64_t mtrr_physmask;
-} __packed;
-
-struct txt_mtrr_state {
-	uint64_t default_mem_type;
-	uint64_t mtrr_vcnt;
-	struct txt_mtrr_pair mtrr_pair[TXT_OS_MLE_MAX_VARIABLE_MTRRS];
-} __packed;
-
-/*
  * Secure Launch defined OS/MLE TXT Heap table
  */
 struct txt_os_mle_data {
 	uint32_t version;
 	uint32_t boot_params_addr;
-	uint64_t saved_misc_enable_msr;
-	struct txt_mtrr_state saved_bsp_mtrrs;
+    uint32_t slrt;
+    uint32_t txt_info;
 	uint32_t ap_wake_block;
 	uint32_t ap_wake_block_size;
-	uint64_t evtlog_addr;
-	uint32_t evtlog_size;
 	uint8_t mle_scratch[64];
 } __packed;
 
@@ -339,6 +323,28 @@ static inline int is_in_pmr(struct txt_os_sinit_data *os_sinit, uint64_t base,
 	}
 
 	return 0;
+}
+
+/* evt_log is a physical address and the caller must map it to virtual, if
+ * needed. */
+static inline void find_evt_log(void **evt_log, uint32_t *evt_log_size)
+{
+    struct txt_os_mle_data *os_mle;
+    struct slr_table *slrt;
+    struct slr_entry_log_info *log_info;
+
+    os_mle = txt_os_mle_data_start(_txt(read_txt_reg(TXTCR_HEAP_BASE)));
+    slrt = _txt(os_mle->slrt);
+
+    log_info = (struct slr_entry_log_info *)
+        slr_next_entry_by_tag(slrt, NULL, SLR_ENTRY_LOG_INFO);
+    if ( log_info != NULL ) {
+        *evt_log = _p(log_info->addr);
+        *evt_log_size = log_info->size;
+    } else {
+        *evt_log = NULL;
+        *evt_log_size = 0;
+    }
 }
 
 extern void protect_txt_mem_regions(void);
