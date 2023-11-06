@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
  - The x86 MCE command line option info is now updated.
 
 ### Added / support upgraded
+ - On x86:
+   - Introduce a new x2APIC driver that uses Cluster Logical addressing mode
+     for IPIs and Physical addressing mode for external interrupts.
  - Out-of-tree builds for the hypervisor now supported.
  - __ro_after_init support, for marking data as immutable after boot.
  - The project has officially adopted 4 directives and 24 rules of MISRA-C,
