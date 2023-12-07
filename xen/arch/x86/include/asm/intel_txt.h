@@ -325,6 +325,18 @@ static inline int is_in_pmr(struct txt_os_sinit_data *os_sinit, uint64_t base,
 	return 0;
 }
 
+/*
+ * This helper function is used to map memory using L2 page tables by aligning
+ * mapped regions to 2MB. This way page allocator (which at this point isn't
+ * yet initialized) isn't needed for creating new L1 mappings. The function
+ * also checks and skips memory already mapped by the prebuilt tables.
+ *
+ * There is no unmap_l2() because the function is meant to be used for code that
+ * accesses TXT registers and TXT heap soon after which Xen rebuilds memory
+ * maps, effectively dropping all existing mappings.
+ */
+extern int map_l2(unsigned long paddr, unsigned long size);
+
 /* evt_log is a physical address and the caller must map it to virtual, if
  * needed. */
 static inline void find_evt_log(void **evt_log, uint32_t *evt_log_size)
@@ -347,6 +359,7 @@ static inline void find_evt_log(void **evt_log, uint32_t *evt_log_size)
     }
 }
 
+extern void map_txt_mem_regions(void);
 extern void protect_txt_mem_regions(void);
 extern void txt_restore_mtrrs(bool e820_verbose);
 

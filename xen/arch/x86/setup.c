@@ -1148,9 +1148,13 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 #endif
     }
 
-    /* Reserve TXT heap and SINIT for Secure Launch path. */
     if ( sl_status )
+    {
+        /* Prepare for TXT-related code. */
+        map_txt_mem_regions();
+        /* Reserve TXT heap and SINIT. */
         protect_txt_mem_regions();
+    }
 
     /* Sanitise the raw E820 map to produce a final clean version. */
     max_page = raw_max_page = init_e820(memmap_type, &e820_raw);
