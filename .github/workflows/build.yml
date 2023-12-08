@@ -11,7 +11,7 @@ jobs:
   qubes-dom0-package:
     uses: TrenchBoot/.github/.github/workflows/qubes-dom0-package.yml@master
     with:
-      base-commit: 'cbb35e72802f3a285c382a995ef647b59e5caf2f'
+      base-commit: 'c23e698430f3381304643d59b1ae373e36a318d5'
       patch-start: 1300
       qubes-component: 'vmm-xen'
       spec-pattern: '/^Patch1202:/'
