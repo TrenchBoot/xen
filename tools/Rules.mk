@@ -25,7 +25,7 @@ CFLAGS_xeninclude = -I$(XEN_INCLUDE)
 XENSTORE_XENSTORED ?= y
 
 # A debug build of tools?
-debug ?= y
+debug ?= n
 debug_symbols ?= $(debug)
 
 XEN_GOCODE_URL    = golang.xenproject.org
@@ -105,6 +105,22 @@ define xenlibs-ldlibs
     $(foreach lib,$(1),$(xenlibs-ldlibs-$(lib)))
 endef
 
+# Provide needed flags for linking an in-tree Xen library by an external
+# project (or when it is necessary to link with "-lxen$(1)" instead of using
+# the full path to the library).
+define xenlibs-ldflags
+    $(call xenlibs-rpath,$(1)) \
+    $(foreach lib,$(1),-L$(XEN_ROOT)/tools/libs/$(lib))
+endef
+
+# Flags for linking against all Xen libraries listed in $(1) but by making use
+# of -L and -l instead of providing a path to the shared library.
+define xenlibs-ldflags-ldlibs
+    $(call xenlibs-ldflags,$(1)) \
+    $(foreach lib,$(1), -l$(FILENAME_$(lib))) \
+    $(foreach lib,$(1),$(xenlibs-ldlibs-$(lib)))
+endef
+
 define LIB_defs
  FILENAME_$(1) ?= xen$(1)
  XEN_libxen$(1) = $$(XEN_ROOT)/tools/libs/$(1)
@@ -124,6 +140,13 @@ xenlibs-ldlibs-store := -ldl
 endif
 
 CFLAGS_libxenlight += $(CFLAGS_libxenctrl)
+
+# Don't add -Werror if we are used by qemu-trad build system.
+ifndef BUILDING_QEMU_TRAD
+ifeq ($(CONFIG_WERROR),y)
+CFLAGS += -Werror
+endif
+endif
 
 ifeq ($(debug),y)
 # Use -Og if available, -O0 otherwise

@@ -106,7 +106,8 @@ bool pci_ecam_need_p2m_hwdom_mapping(struct domain *d,
                                      struct pci_host_bridge *bridge,
                                      uint64_t addr);
 struct pci_host_bridge *pci_find_host_bridge(uint16_t segment, uint8_t bus);
-struct dt_device_node *pci_find_host_bridge_node(struct device *dev);
+const struct dt_device_node *
+pci_find_host_bridge_node(const struct pci_dev *pdev);
 int pci_get_host_bridge_segment(const struct dt_device_node *node,
                                 uint16_t *segment);
 
@@ -124,6 +125,8 @@ int pci_host_iterate_bridges_and_count(struct domain *d,
                                                  struct pci_host_bridge *bridge));
 
 int pci_host_bridge_mappings(struct domain *d);
+
+bool pci_check_bar(const struct pci_dev *pdev, mfn_t start, mfn_t end);
 
 #else   /*!CONFIG_HAS_PCI*/
 

@@ -272,6 +272,14 @@ static int cf_check ns16550_getc(struct serial_port *port, char *pc)
 static void pci_serial_early_init(struct ns16550 *uart)
 {
 #ifdef NS16550_PCI
+    if ( uart->bar && uart->io_base >= 0x10000 )
+    {
+        pci_conf_write16(PCI_SBDF(0, uart->ps_bdf[0], uart->ps_bdf[1],
+                                  uart->ps_bdf[2]),
+                         PCI_COMMAND, PCI_COMMAND_MEMORY);
+        return;
+    }
+
     if ( !uart->ps_bdf_enable || uart->io_base >= 0x10000 )
         return;
 
@@ -1631,13 +1639,6 @@ static bool __init parse_namevalue_pairs(char *str, struct ns16550 *uart)
             break;
 
 #ifdef CONFIG_HAS_PCI
-        case bridge_bdf:
-            if ( !parse_pci(param_value, NULL, &uart->ps_bdf[0],
-                            &uart->ps_bdf[1], &uart->ps_bdf[2]) )
-                PARSE_ERR_RET("Bad port PCI coordinates\n");
-            uart->ps_bdf_enable = true;
-            break;
-
         case device:
             if ( strncmp(param_value, "pci", 3) == 0 )
             {
@@ -1652,9 +1653,16 @@ static bool __init parse_namevalue_pairs(char *str, struct ns16550 *uart)
             break;
 
         case port_bdf:
+            if ( !parse_pci(param_value, NULL, &uart->ps_bdf[0],
+                            &uart->ps_bdf[1], &uart->ps_bdf[2]) )
+                PARSE_ERR_RET("Bad port PCI coordinates\n");
+            uart->ps_bdf_enable = true;
+            break;
+
+        case bridge_bdf:
             if ( !parse_pci(param_value, NULL, &uart->pb_bdf[0],
                             &uart->pb_bdf[1], &uart->pb_bdf[2]) )
-                PARSE_ERR_RET("Bad port PCI coordinates\n");
+                PARSE_ERR_RET("Bad bridge PCI coordinates\n");
             uart->pb_bdf_enable = true;
             break;
 #endif
@@ -1875,7 +1883,7 @@ static int __init ns16550_acpi_uart_init(const void *data)
     uart->parity = spcr->parity;
     uart->stop_bits = spcr->stop_bits;
     uart->io_base = spcr->serial_port.address;
-    uart->io_size = spcr->serial_port.bit_width;
+    uart->io_size = DIV_ROUND_UP(spcr->serial_port.bit_width, BITS_PER_BYTE);
     uart->reg_shift = spcr->serial_port.bit_offset;
     uart->reg_width = spcr->serial_port.access_width;
 

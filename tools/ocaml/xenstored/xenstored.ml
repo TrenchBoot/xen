@@ -88,7 +88,7 @@ let default_pidfile = Paths.xen_run_dir ^ "/xenstored.pid"
 
 let ring_scan_interval = ref 20
 
-let parse_config filename =
+let parse_config ?(strict=false) filename =
 	let pidfile = ref default_pidfile in
 	let options = [
 		("merge-activate", Config.Set_bool Transaction.do_coalesce);
@@ -103,7 +103,10 @@ let parse_config filename =
 		("quota-maxentity", Config.Set_int Quota.maxent);
 		("quota-maxsize", Config.Set_int Quota.maxsize);
 		("quota-maxrequests", Config.Set_int Define.maxrequests);
+		("quota-maxoutstanding", Config.Set_int Define.maxoutstanding);
+		("quota-maxwatchevents", Config.Set_int Define.maxwatchevents);
 		("quota-path-max", Config.Set_int Define.path_max);
+		("gc-max-overhead", Config.Set_int Define.gc_max_overhead);
 		("test-eagain", Config.Set_bool Transaction.test_eagain);
 		("persistent", Config.Set_bool Disk.enable);
 		("xenstored-log-file", Config.String Logging.set_xenstored_log_destination);
@@ -126,11 +129,12 @@ let parse_config filename =
 		("xenstored-port", Config.Set_string Domains.xenstored_port); ] in
 	begin try Config.read filename options (fun _ _ -> raise Not_found)
 	with
-	| Config.Error err -> List.iter (fun (k, e) ->
+	| Config.Error err as e -> List.iter (fun (k, e) ->
 		match e with
 		| "unknown key" -> eprintf "config: unknown key %s\n" k
 		| _             -> eprintf "config: %s: %s\n" k e
 		) err;
+		if strict then raise e
 	| Sys_error m -> eprintf "error: config: %s\n" m;
 	end;
 	!pidfile
@@ -141,7 +145,7 @@ exception Bad_format of string
 
 let dump_format_header = "$xenstored-dump-format"
 
-let from_channel_f chan global_f socket_f domain_f watch_f store_f =
+let from_channel_f chan global_f evtchn_f socket_f domain_f watch_f store_f =
 	let unhexify s = Utils.unhexify s in
 	let getpath s =
 		let u = Utils.unhexify s in
@@ -162,12 +166,19 @@ let from_channel_f chan global_f socket_f domain_f watch_f store_f =
 					(* there might be more parameters here,
 					   e.g. a RO socket from a previous version: ignore it *)
 					global_f ~rw
+				| "evtchn-dev" :: fd :: domexc_port :: [] ->
+					evtchn_f ~fd:(int_of_string fd)
+						 ~domexc_port:(int_of_string domexc_port)
 				| "socket" :: fd :: [] ->
 					socket_f ~fd:(int_of_string fd)
-				| "dom" :: domid :: mfn :: port :: []->
-					domain_f (int_of_string domid)
-					         (Nativeint.of_string mfn)
-					         (int_of_string port)
+				| "dom" :: domid :: mfn :: remote_port :: rest ->
+					let local_port = match rest with
+						  | [] -> None (* backward compat: old version didn't have it *)
+						  | local_port :: _ -> Some (int_of_string local_port) in
+					domain_f ?local_port
+						 ~remote_port:(int_of_string remote_port)
+						 (int_of_string domid)
+						 (Nativeint.of_string mfn)
 				| "watch" :: domid :: path :: token :: [] ->
 					watch_f (int_of_string domid)
 					        (unhexify path) (unhexify token)
@@ -176,9 +187,9 @@ let from_channel_f chan global_f socket_f domain_f watch_f store_f =
 					        (Perms.Node.of_string (unhexify perms ^ "\000"))
 					        (unhexify value)
 				| _ ->
-					info "restoring: ignoring unknown line: %s" line
+					warn "restoring: ignoring unknown line: %s" line
 			with exn ->
-				info "restoring: ignoring unknown line: %s (exception: %s)"
+				warn "restoring: ignoring unknown line: %s (exception: %s)"
 				     line (Printexc.to_string exn);
 				()
 		with End_of_file ->
@@ -186,10 +197,21 @@ let from_channel_f chan global_f socket_f domain_f watch_f store_f =
 	done;
 	info "Completed loading xenstore dump"
 
-let from_channel store cons doms chan =
+let from_channel store cons domains_init chan =
 	(* don't let the permission get on our way, full perm ! *)
 	let op = Store.get_ops store Perms.Connection.full_rights in
 	let rwro = ref (None) in
+	let doms = ref (None) in
+
+	let require_doms () =
+		match !doms with
+		| None ->
+			warn "No event channel file descriptor available in dump!";
+		        let domains = domains_init @@ Event.init () in
+		        doms := Some domains;
+		        domains
+		| Some d -> d
+	in
 	let global_f ~rw =
 		let get_listen_sock sockfd =
 			let fd = sockfd |> int_of_string |> Utils.FD.of_int in
@@ -197,6 +219,10 @@ let from_channel store cons doms chan =
 			Some fd
 		in
 		rwro := get_listen_sock rw
+	in
+	let evtchn_f ~fd ~domexc_port =
+		let evtchn = Event.init ~fd ~domexc_port () in
+		doms := Some(domains_init evtchn)
 	in
 	let socket_f ~fd =
 		let ufd = Utils.FD.of_int fd in
@@ -206,12 +232,13 @@ let from_channel store cons doms chan =
 		else
 			warn "Ignoring invalid socket FD %d" fd
 	in
-	let domain_f domid mfn port =
+	let domain_f ?local_port ~remote_port domid mfn =
+		let doms = require_doms () in
 		let ndom =
 			if domid > 0 then
-				Domains.create doms domid mfn port
+				Domains.create ?local_port ~remote_port doms domid mfn
 			else
-				Domains.create0 doms
+				Domains.create0 ?local_port doms
 			in
 		Connections.add_domain cons ndom;
 		in
@@ -226,8 +253,8 @@ let from_channel store cons doms chan =
 		op.Store.write path value;
 		op.Store.setperms path perms
 		in
-	from_channel_f chan global_f socket_f domain_f watch_f store_f;
-	!rwro
+	from_channel_f chan global_f evtchn_f socket_f domain_f watch_f store_f;
+	!rwro, require_doms ()
 
 let from_file store cons doms file =
 	info "Loading xenstore dump from %s" file;
@@ -235,7 +262,7 @@ let from_file store cons doms file =
 	finally (fun () -> from_channel store doms cons channel)
 	        (fun () -> close_in channel)
 
-let to_channel store cons rw chan =
+let to_channel store cons (rw, evtchn) chan =
 	let hexify s = Utils.hexify s in
 
 	fprintf chan "%s\n" dump_format_header;
@@ -244,6 +271,9 @@ let to_channel store cons rw chan =
 		Unix.clear_close_on_exec fd;
 		Utils.FD.to_int fd in
 	fprintf chan "global,%d\n" (fdopt rw);
+
+	(* dump evtchn device info *)
+	Event.dump evtchn chan;
 
 	(* dump connections related to domains: domid, mfn, eventchn port/ sockets, and watches *)
 	Connections.iter cons (fun con -> Connection.dump con chan);
@@ -265,14 +295,84 @@ let to_file store cons fds file =
 	        (fun () -> close_out channel)
 end
 
-let _ =
+(*
+	By default OCaml's GC only returns memory to the OS when it exceeds a
+	configurable 'max overhead' setting.
+	The default is 500%, that is 5/6th of the OCaml heap needs to be free
+	and only 1/6th live for a compaction to be triggerred that would
+	release memory back to the OS.
+	If the limit is not hit then the OCaml process can reuse that memory
+	for its own purposes, but other processes won't be able to use it.
+
+	There is also a 'space overhead' setting that controls how much work
+	each major GC slice does, and by default aims at having no more than
+	80% or 120% (depending on version) garbage values compared to live
+	values.
+	This doesn't have as much relevance to memory returned to the OS as
+	long as space_overhead <= max_overhead, because compaction is only
+	triggerred at the end of major GC cycles.
+
+	The defaults are too large once the program starts using ~100MiB of
+	memory, at which point ~500MiB would be unavailable to other processes
+	(which would be fine if this was the main process in this VM, but it is
+	not).
+
+	Max overhead can also be set to 0, however this is for testing purposes
+	only (setting it lower than 'space overhead' wouldn't help because the
+	major GC wouldn't run fast enough, and compaction does have a
+	performance cost: we can only compact contiguous regions, so memory has
+	to be moved around).
+
+	Max overhead controls how often the heap is compacted, which is useful
+	if there are burst of activity followed by long periods of idle state,
+	or if a domain quits, etc. Compaction returns memory to the OS.
+
+	wasted = live * space_overhead / 100
+
+	For globally overriding the GC settings one can use OCAMLRUNPARAM,
+	however we provide a config file override to be consistent with other
+	oxenstored settings.
+
+	One might want to dynamically adjust the overhead setting based on used
+	memory, i.e. to use a fixed upper bound in bytes, not percentage. However
+	measurements show that such adjustments increase GC overhead massively,
+	while still not guaranteeing that memory is returned any more quickly
+	than with a percentage based setting.
+
+	The allocation policy could also be tweaked, e.g. first fit would reduce
+	fragmentation and thus memory usage, but the documentation warns that it
+	can be sensibly slower, and indeed one of our own testcases can trigger
+	such a corner case where it is multiple times slower, so it is best to keep
+	the default allocation policy (next-fit/best-fit depending on version).
+
+	There are other tweaks that can be attempted in the future, e.g. setting
+	'ulimit -v' to 75% of RAM, however getting the kernel to actually return
+	NULL from allocations is difficult even with that setting, and without a
+	NULL the emergency GC won't be triggerred.
+	Perhaps cgroup limits could help, but for now tweak the safest only.
+*)
+
+let tweak_gc () =
+	Gc.set { (Gc.get ()) with Gc.max_overhead = !Define.gc_max_overhead }
+
+
+let () =
+	Printexc.set_uncaught_exception_handler Logging.fallback_exception_handler;
 	let cf = do_argv in
+	if cf.config_test then begin
+		let path = config_filename cf in
+		let _pidfile:string = parse_config ~strict:true path in
+		Printf.printf "Configuration valid at %s\n%!" path;
+		exit 0
+	end;
 	let pidfile =
 		if Sys.file_exists (config_filename cf) then
 			parse_config (config_filename cf)
 		else
 			default_pidfile
 		in
+
+	tweak_gc ();
 
 	(try
 		Unixext.mkdir_rec (Filename.dirname pidfile) 0o755
@@ -301,7 +401,6 @@ let _ =
 	| None         -> () end;
 
 	let store = Store.create () in
-	let eventchn = Event.init () in
 	let next_frequent_ops = ref 0. in
 	let advance_next_frequent_ops () =
 		next_frequent_ops := (Unix.gettimeofday () +. !Define.conflict_max_history_seconds)
@@ -309,16 +408,8 @@ let _ =
 	let delay_next_frequent_ops_by duration =
 		next_frequent_ops := !next_frequent_ops +. duration
 	in
-	let domains = Domains.init eventchn advance_next_frequent_ops in
+	let domains_init eventchn = Domains.init eventchn advance_next_frequent_ops in
 
-	(* For things that need to be done periodically but more often
-	 * than the periodic_ops function *)
-	let frequent_ops () =
-		if Unix.gettimeofday () > !next_frequent_ops then (
-			History.trim ();
-			Domains.incr_conflict_credit domains;
-			advance_next_frequent_ops ()
-		) in
 	let cons = Connections.create () in
 
 	let quit = ref false in
@@ -327,15 +418,15 @@ let _ =
 	List.iter (fun path ->
 		Store.write store Perms.Connection.full_rights path "") Store.Path.specials;
 
-	let rw_sock =
+	let rw_sock, domains =
 	if cf.restart && Sys.file_exists Disk.xs_daemon_database then (
-		let rwro = DB.from_file store domains cons Disk.xs_daemon_database in
+		let rw, domains = DB.from_file store domains_init cons Disk.xs_daemon_database in
 		info "Live reload: database loaded";
-		Event.bind_dom_exc_virq eventchn;
 		Process.LiveUpdate.completed ();
-		rwro
+		rw, domains
 	) else (
 		info "No live reload: regular startup";
+		let domains = domains_init @@ Event.init () in
 		if !Disk.enable then (
 			info "reading store from disk";
 			Disk.read store
@@ -347,10 +438,25 @@ let _ =
 
 		if cf.domain_init then (
 			Connections.add_domain cons (Domains.create0 domains);
-			Event.bind_dom_exc_virq eventchn
 		);
-		rw_sock
+		rw_sock, domains
 	) in
+
+	(* For things that need to be done periodically but more often
+	 * than the periodic_ops function *)
+	let frequent_ops () =
+		if Unix.gettimeofday () > !next_frequent_ops then (
+			History.trim ();
+			Domains.incr_conflict_credit domains;
+			advance_next_frequent_ops ()
+		) in
+
+	(* required for xenstore-control to detect availability of live-update *)
+	let tool_path = Store.Path.of_string "/tool" in
+	if not (Store.path_exists store tool_path) then
+		Store.mkdir store Perms.Connection.full_rights tool_path;
+	Store.write store Perms.Connection.full_rights
+		(Store.Path.of_string "/tool/xenstored") Sys.executable_name;
 
 	Sys.set_signal Sys.sighup (Sys.Signal_handle sighup_handler);
 	Sys.set_signal Sys.sigterm (Sys.Signal_handle (fun _ ->
@@ -359,8 +465,10 @@ let _ =
 	Sys.set_signal Sys.sigusr1 (Sys.Signal_handle (fun _ -> sigusr1_handler store));
 	Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
 
+	let eventchn = Domains.eventchn domains in
+
 	if cf.activate_access_log then begin
-		let post_rotate () = DB.to_file store cons (None) Disk.xs_daemon_database in
+		let post_rotate () = DB.to_file store cons (None, eventchn) Disk.xs_daemon_database in
 		Logging.init_access_log post_rotate
 	end;
 
@@ -378,7 +486,7 @@ let _ =
 			let port = Event.pending eventchn in
 			debug "pending port %d" (Xeneventchn.to_int port);
 			finally (fun () ->
-				if Some port = eventchn.Event.virq_port then (
+				if port = eventchn.Event.domexc then (
 					let (notify, deaddom) = Domains.cleanup domains in
 					List.iter (Store.reset_permissions store) deaddom;
 					List.iter (Connections.del_domain cons) deaddom;
@@ -402,7 +510,7 @@ let _ =
 
 	let ring_scan_checker dom =
 		(* no need to scan domains already marked as for processing *)
-		if not (Domain.get_io_credit dom > 0) then
+		if not (Domain.get_io_credit dom > 0) then (
 			debug "Looking up domid %d" (Domain.get_id dom);
 			let con = Connections.find_domain cons (Domain.get_id dom) in
 			if not (Connection.has_more_work con) then (
@@ -417,7 +525,8 @@ let _ =
 					let n = 32 + 2 * (Domains.number domains) in
 					info "found lazy domain %d, credit %d" (Domain.get_id dom) n;
 					Domain.set_io_credit ~n dom
-			) in
+			)
+		) in
 
 	let last_stat_time = ref 0. in
 	let last_scan_time = ref 0. in
@@ -521,7 +630,7 @@ let _ =
 			live_update := Process.LiveUpdate.should_run cons;
 			if !live_update || !quit then begin
 				(* don't initiate live update if saving state fails *)
-				DB.to_file store cons (rw_sock) Disk.xs_daemon_database;
+				DB.to_file store cons (rw_sock, eventchn) Disk.xs_daemon_database;
 				quit := true;
 			end
 		with exc ->

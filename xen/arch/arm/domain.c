@@ -137,7 +137,7 @@ static void ctxt_switch_from(struct vcpu *p)
     p->arch.ttbr1 = READ_SYSREG64(TTBR1_EL1);
     if ( is_32bit_domain(p->domain) )
         p->arch.dacr = READ_SYSREG(DACR32_EL2);
-    p->arch.par = READ_SYSREG64(PAR_EL1);
+    p->arch.par = read_sysreg_par();
 #if defined(CONFIG_ARM_32)
     p->arch.mair0 = READ_CP32(MAIR0);
     p->arch.mair1 = READ_CP32(MAIR1);
@@ -795,10 +795,10 @@ fail:
 void arch_domain_destroy(struct domain *d)
 {
     /* IOMMU page table is shared with P2M, always call
-     * iommu_domain_destroy() before p2m_teardown().
+     * iommu_domain_destroy() before p2m_final_teardown().
      */
     iommu_domain_destroy(d);
-    p2m_teardown(d);
+    p2m_final_teardown(d);
     domain_vgic_free(d);
     domain_vuart_free(d);
     free_xenheap_page(d->shared_info);
@@ -1001,6 +1001,8 @@ enum {
     PROG_xen,
     PROG_page,
     PROG_mapping,
+    PROG_p2m,
+    PROG_p2m_pool,
     PROG_done,
 };
 
@@ -1059,6 +1061,16 @@ int domain_relinquish_resources(struct domain *d)
     PROGRESS(mapping):
         ret = relinquish_p2m_mapping(d);
         if ( ret )
+            return ret;
+
+    PROGRESS(p2m):
+        ret = p2m_teardown(d, true);
+        if ( ret )
+            return ret;
+
+    PROGRESS(p2m_pool):
+        ret = p2m_teardown_allocation(d);
+        if( ret )
             return ret;
 
     PROGRESS(done):

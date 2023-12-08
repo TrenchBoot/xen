@@ -2693,12 +2693,17 @@ struct domain *get_pg_owner(domid_t domid)
 }
 
 #ifdef CONFIG_STATIC_MEMORY
-/* Equivalent of free_heap_pages to free nr_mfns pages of static memory. */
-void __init free_staticmem_pages(struct page_info *pg, unsigned long nr_mfns,
-                                 bool need_scrub)
+/*
+ * It is the opposite of prepare_staticmem_pages, and it aims to unprepare
+ * nr_mfns pages of static memory.
+ */
+void unprepare_staticmem_pages(struct page_info *pg, unsigned long nr_mfns,
+                               bool need_scrub)
 {
     mfn_t mfn = page_to_mfn(pg);
     unsigned long i;
+
+    spin_lock(&heap_lock);
 
     for ( i = 0; i < nr_mfns; i++ )
     {
@@ -2710,31 +2715,52 @@ void __init free_staticmem_pages(struct page_info *pg, unsigned long nr_mfns,
             scrub_one_page(pg);
         }
 
-        /* In case initializing page of static memory, mark it PGC_static. */
         pg[i].count_info |= PGC_static;
     }
+
+    spin_unlock(&heap_lock);
 }
 
-/*
- * Acquire nr_mfns contiguous reserved pages, starting at #smfn, of
- * static memory.
- * This function needs to be reworked if used outside of boot.
- */
-static struct page_info * __init acquire_staticmem_pages(mfn_t smfn,
-                                                         unsigned long nr_mfns,
-                                                         unsigned int memflags)
+void free_domstatic_page(struct page_info *page)
+{
+    struct domain *d = page_get_owner(page);
+    bool drop_dom_ref;
+
+    if ( unlikely(!d) )
+    {
+        printk(XENLOG_G_ERR
+               "The about-to-free static page %"PRI_mfn" must be owned by a domain\n",
+               mfn_x(page_to_mfn(page)));
+        ASSERT_UNREACHABLE();
+        return;
+    }
+
+    ASSERT_ALLOC_CONTEXT();
+
+    /* NB. May recursively lock from relinquish_memory(). */
+    spin_lock_recursive(&d->page_alloc_lock);
+
+    arch_free_heap_page(d, page);
+
+    drop_dom_ref = !domain_adjust_tot_pages(d, -1);
+
+    unprepare_staticmem_pages(page, 1, scrub_debug);
+
+    /* Add page on the resv_page_list *after* it has been freed. */
+    page_list_add_tail(page, &d->resv_page_list);
+
+    spin_unlock_recursive(&d->page_alloc_lock);
+
+    if ( drop_dom_ref )
+        put_domain(d);
+}
+
+static bool prepare_staticmem_pages(struct page_info *pg, unsigned long nr_mfns,
+                                    unsigned int memflags)
 {
     bool need_tlbflush = false;
     uint32_t tlbflush_timestamp = 0;
     unsigned long i;
-    struct page_info *pg;
-
-    ASSERT(nr_mfns);
-    for ( i = 0; i < nr_mfns; i++ )
-        if ( !mfn_valid(mfn_add(smfn, i)) )
-            return NULL;
-
-    pg = mfn_to_page(smfn);
 
     spin_lock(&heap_lock);
 
@@ -2745,7 +2771,7 @@ static struct page_info * __init acquire_staticmem_pages(mfn_t smfn,
         {
             printk(XENLOG_ERR
                    "pg[%lu] Static MFN %"PRI_mfn" c=%#lx t=%#x\n",
-                   i, mfn_x(smfn) + i,
+                   i, mfn_x(page_to_mfn(pg)) + i,
                    pg[i].count_info, pg[i].tlbflush_timestamp);
             goto out_err;
         }
@@ -2769,6 +2795,38 @@ static struct page_info * __init acquire_staticmem_pages(mfn_t smfn,
     if ( need_tlbflush )
         filtered_flush_tlb_mask(tlbflush_timestamp);
 
+    return true;
+
+ out_err:
+    while ( i-- )
+        pg[i].count_info = PGC_static | PGC_state_free;
+
+    spin_unlock(&heap_lock);
+
+    return false;
+}
+
+/*
+ * Acquire nr_mfns contiguous reserved pages, starting at #smfn, of
+ * static memory.
+ * This function needs to be reworked if used outside of boot.
+ */
+static struct page_info * __init acquire_staticmem_pages(mfn_t smfn,
+                                                         unsigned long nr_mfns,
+                                                         unsigned int memflags)
+{
+    unsigned long i;
+    struct page_info *pg;
+
+    ASSERT(nr_mfns);
+    for ( i = 0; i < nr_mfns; i++ )
+        if ( !mfn_valid(mfn_add(smfn, i)) )
+            return NULL;
+
+    pg = mfn_to_page(smfn);
+    if ( !prepare_staticmem_pages(pg, nr_mfns, memflags) )
+        return NULL;
+
     /*
      * Ensure cache and RAM are consistent for platforms where the guest
      * can control its own visibility of/through the cache.
@@ -2777,14 +2835,25 @@ static struct page_info * __init acquire_staticmem_pages(mfn_t smfn,
         flush_page_to_ram(mfn_x(smfn) + i, !(memflags & MEMF_no_icache_flush));
 
     return pg;
+}
 
- out_err:
-    while ( i-- )
-        pg[i].count_info = PGC_static | PGC_state_free;
+static int assign_domstatic_pages(struct domain *d, struct page_info *pg,
+                                  unsigned int nr_mfns, unsigned int memflags)
+{
+    if ( !d || (memflags & (MEMF_no_owner | MEMF_no_refcount)) )
+    {
+        /*
+         * Respective handling omitted here because right now
+         * acquired static memory is only for domain's RAM.
+         */
+        ASSERT_UNREACHABLE();
+        return -EINVAL;
+    }
 
-    spin_unlock(&heap_lock);
+    if ( assign_pages(pg, nr_mfns, d, memflags) )
+        return -EINVAL;
 
-    return NULL;
+    return 0;
 }
 
 /*
@@ -2802,23 +2871,51 @@ int __init acquire_domstatic_pages(struct domain *d, mfn_t smfn,
     if ( !pg )
         return -ENOENT;
 
-    if ( !d || (memflags & (MEMF_no_owner | MEMF_no_refcount)) )
+    if ( assign_domstatic_pages(d, pg, nr_mfns, memflags) )
     {
-        /*
-         * Respective handling omitted here because right now
-         * acquired static memory is only for guest RAM.
-         */
-        ASSERT_UNREACHABLE();
-        return -EINVAL;
-    }
-
-    if ( assign_pages(pg, nr_mfns, d, memflags) )
-    {
-        free_staticmem_pages(pg, nr_mfns, memflags & MEMF_no_scrub);
+        unprepare_staticmem_pages(pg, nr_mfns, memflags & MEMF_no_scrub);
         return -EINVAL;
     }
 
     return 0;
+}
+
+/*
+ * Acquire a page from reserved page list(resv_page_list), when populating
+ * memory for static domain on runtime.
+ */
+mfn_t acquire_reserved_page(struct domain *d, unsigned int memflags)
+{
+    struct page_info *page;
+
+    ASSERT_ALLOC_CONTEXT();
+
+    /* Acquire a page from reserved page list(resv_page_list). */
+    spin_lock(&d->page_alloc_lock);
+    page = page_list_remove_head(&d->resv_page_list);
+    spin_unlock(&d->page_alloc_lock);
+    if ( unlikely(!page) )
+        return INVALID_MFN;
+
+    if ( !prepare_staticmem_pages(page, 1, memflags) )
+        goto fail;
+
+    if ( assign_domstatic_pages(d, page, 1, memflags) )
+        goto fail_assign;
+
+    return page_to_mfn(page);
+
+ fail_assign:
+    /*
+     * The page was never accessible by the domain. So scrubbing can be
+     * skipped
+     */
+    unprepare_staticmem_pages(page, 1, false);
+ fail:
+    spin_lock(&d->page_alloc_lock);
+    page_list_add_tail(page, &d->resv_page_list);
+    spin_unlock(&d->page_alloc_lock);
+    return INVALID_MFN;
 }
 #endif
 

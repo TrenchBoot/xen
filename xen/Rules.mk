@@ -228,8 +228,9 @@ quiet_cmd_cc_o_c = CC      $@
 ifeq ($(CONFIG_ENFORCE_UNIQUE_SYMBOLS),y)
     cmd_cc_o_c = $(CC) $(c_flags) -c $< -o $(dot-target).tmp -MQ $@
     ifneq ($(CONFIG_CC_IS_CLANG)$(call clang-ifversion,-lt,600,y),yy)
+        rel-path = $(patsubst $(abs_srctree)/%,%,$(call realpath,$(1)))
         cmd_objcopy_fix_sym = \
-	    $(OBJCOPY) --redefine-sym $(<F)=$< $(dot-target).tmp $@ && rm -f $(dot-target).tmp
+           $(OBJCOPY) --redefine-sym $(<F)=$(call rel-path,$<) $(dot-target).tmp $@ && rm -f $(dot-target).tmp
     else
         cmd_objcopy_fix_sym = mv -f $(dot-target).tmp $@
     endif
@@ -272,6 +273,9 @@ $(filter %.init.o,$(obj-y) $(obj-bin-y) $(extra-y)): $(obj)/%.init.o: $(obj)/%.o
 quiet_cmd_cpp_i_c = CPP     $@
 cmd_cpp_i_c = $(CPP) $(call cpp_flags,$(c_flags)) -MQ $@ -o $@ $<
 
+quiet_cmd_cpp_i_S = CPP     $@
+cmd_cpp_i_S = $(CPP) $(call cpp_flags,$(a_flags)) -MQ $@ -o $@ $<
+
 quiet_cmd_cc_s_c = CC      $@
 cmd_cc_s_c = $(CC) $(filter-out -Wa$(comma)%,$(c_flags)) -S $< -o $@
 
@@ -280,6 +284,9 @@ cmd_cpp_s_S = $(CPP) $(call cpp_flags,$(a_flags)) -MQ $@ -o $@ $<
 
 $(obj)/%.i: $(src)/%.c FORCE
 	$(call if_changed_dep,cpp_i_c)
+
+$(obj)/%.i: $(src)/%.S FORCE
+	$(call if_changed_dep,cpp_i_S)
 
 $(obj)/%.s: $(src)/%.c FORCE
 	$(call if_changed_dep,cc_s_c)

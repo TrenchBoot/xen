@@ -377,13 +377,15 @@ int libxl__build_pre(libxl__gc *gc, uint32_t domid,
     state->console_port = xc_evtchn_alloc_unbound(ctx->xch, domid, state->console_domid);
 
     rc = libxl__arch_domain_create(gc, d_config, state, domid);
+    if (rc) goto out;
 
     /* Construct a CPUID policy, but only for brand new domains.  Domains
      * being migrated-in/restored have CPUID handled during the
      * static_data_done() callback. */
-    if (!state->restore)
+    if (!state->restore && !state->soft_reset)
         rc = libxl__cpuid_legacy(ctx, domid, false, info);
 
+out:
     return rc;
 }
 
@@ -1446,6 +1448,32 @@ out:
     CTX_UNLOCK;
     GC_FREE;
     return rc;
+}
+
+int libxl__domain_set_paging_mempool_size(
+    libxl__gc *gc, libxl_domain_config *d_config, uint32_t domid)
+{
+    uint64_t shadow_mem;
+
+    shadow_mem = d_config->b_info.shadow_memkb;
+    shadow_mem <<= 10;
+
+    if ((shadow_mem >> 10) != d_config->b_info.shadow_memkb) {
+        LOGED(ERROR, domid,
+              "shadow_memkb value %"PRIu64"kB too large",
+              d_config->b_info.shadow_memkb);
+        return ERROR_FAIL;
+    }
+
+    int r = xc_set_paging_mempool_size(CTX->xch, domid, shadow_mem);
+    if (r) {
+        LOGED(ERROR, domid,
+              "Failed to set paging mempool size to %"PRIu64"kB",
+              d_config->b_info.shadow_memkb);
+        return ERROR_FAIL;
+    }
+
+    return 0;
 }
 
 /*

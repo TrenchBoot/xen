@@ -132,12 +132,12 @@ uint64_t init_ttbr;
 static paddr_t phys_offset;
 
 /* Limits of the Xen heap */
-mfn_t xenheap_mfn_start __read_mostly = INVALID_MFN_INITIALIZER;
-mfn_t xenheap_mfn_end __read_mostly;
-vaddr_t xenheap_virt_end __read_mostly;
+mfn_t directmap_mfn_start __read_mostly = INVALID_MFN_INITIALIZER;
+mfn_t directmap_mfn_end __read_mostly;
+vaddr_t directmap_virt_end __read_mostly;
 #ifdef CONFIG_ARM_64
-vaddr_t xenheap_virt_start __read_mostly;
-unsigned long xenheap_base_pdx __read_mostly;
+vaddr_t directmap_virt_start __read_mostly;
+unsigned long directmap_base_pdx __read_mostly;
 #endif
 
 unsigned long frametable_base_pdx __read_mostly;
@@ -234,7 +234,7 @@ void dump_pt_walk(paddr_t ttbr, paddr_t addr,
 
         pte = mapping[offsets[level]];
 
-        printk("%s[0x%x] = 0x%"PRIpaddr"\n",
+        printk("%s[0x%03x] = 0x%"PRIpaddr"\n",
                level_strs[level], offsets[level], pte.bits);
 
         if ( level == 3 || !pte.walk.valid || !pte.walk.table )
@@ -597,55 +597,59 @@ void mmu_init_secondary_cpu(void)
 }
 
 #ifdef CONFIG_ARM_32
-/* Set up the xenheap: up to 1GB of contiguous, always-mapped memory. */
-void __init setup_xenheap_mappings(unsigned long base_mfn,
-                                   unsigned long nr_mfns)
+/*
+ * Set up the direct-mapped xenheap:
+ * up to 1GB of contiguous, always-mapped memory.
+ */
+void __init setup_directmap_mappings(unsigned long base_mfn,
+                                     unsigned long nr_mfns)
 {
     int rc;
 
     rc = map_pages_to_xen(XENHEAP_VIRT_START, _mfn(base_mfn), nr_mfns,
                           PAGE_HYPERVISOR_RW | _PAGE_BLOCK);
     if ( rc )
-        panic("Unable to setup the xenheap mappings.\n");
+        panic("Unable to setup the directmap mappings.\n");
 
-    /* Record where the xenheap is, for translation routines. */
-    xenheap_virt_end = XENHEAP_VIRT_START + nr_mfns * PAGE_SIZE;
+    /* Record where the directmap is, for translation routines. */
+    directmap_virt_end = XENHEAP_VIRT_START + nr_mfns * PAGE_SIZE;
 }
 #else /* CONFIG_ARM_64 */
-void __init setup_xenheap_mappings(unsigned long base_mfn,
-                                   unsigned long nr_mfns)
+/* Map the region in the directmap area. */
+void __init setup_directmap_mappings(unsigned long base_mfn,
+                                     unsigned long nr_mfns)
 {
     int rc;
 
-    /* First call sets the xenheap physical and virtual offset. */
-    if ( mfn_eq(xenheap_mfn_start, INVALID_MFN) )
+    /* First call sets the directmap physical and virtual offset. */
+    if ( mfn_eq(directmap_mfn_start, INVALID_MFN) )
     {
         unsigned long mfn_gb = base_mfn & ~((FIRST_SIZE >> PAGE_SHIFT) - 1);
 
-        xenheap_mfn_start = _mfn(base_mfn);
-        xenheap_base_pdx = mfn_to_pdx(_mfn(base_mfn));
+        directmap_mfn_start = _mfn(base_mfn);
+        directmap_base_pdx = mfn_to_pdx(_mfn(base_mfn));
         /*
          * The base address may not be aligned to the first level
          * size (e.g. 1GB when using 4KB pages). This would prevent
          * superpage mappings for all the regions because the virtual
          * address and machine address should both be suitably aligned.
          *
-         * Prevent that by offsetting the start of the xenheap virtual
+         * Prevent that by offsetting the start of the directmap virtual
          * address.
          */
-        xenheap_virt_start = DIRECTMAP_VIRT_START +
+        directmap_virt_start = DIRECTMAP_VIRT_START +
             (base_mfn - mfn_gb) * PAGE_SIZE;
     }
 
-    if ( base_mfn < mfn_x(xenheap_mfn_start) )
-        panic("cannot add xenheap mapping at %lx below heap start %lx\n",
-              base_mfn, mfn_x(xenheap_mfn_start));
+    if ( base_mfn < mfn_x(directmap_mfn_start) )
+        panic("cannot add directmap mapping at %lx below heap start %lx\n",
+              base_mfn, mfn_x(directmap_mfn_start));
 
     rc = map_pages_to_xen((vaddr_t)__mfn_to_virt(base_mfn),
                           _mfn(base_mfn), nr_mfns,
                           PAGE_HYPERVISOR_RW | _PAGE_BLOCK);
     if ( rc )
-        panic("Unable to setup the xenheap mappings.\n");
+        panic("Unable to setup the directmap mappings.\n");
 }
 #endif
 
@@ -1461,10 +1465,18 @@ long arch_memory_op(int op, XEN_GUEST_HANDLE_PARAM(void) arg)
     return 0;
 }
 
-struct domain *page_get_owner_and_reference(struct page_info *page)
+static struct domain *page_get_owner_and_nr_reference(struct page_info *page,
+                                                      unsigned long nr)
 {
     unsigned long x, y = page->count_info;
     struct domain *owner;
+
+    /* Restrict nr to avoid "double" overflow */
+    if ( nr >= PGC_count_mask )
+    {
+        ASSERT_UNREACHABLE();
+        return NULL;
+    }
 
     do {
         x = y;
@@ -1472,10 +1484,10 @@ struct domain *page_get_owner_and_reference(struct page_info *page)
          * Count ==  0: Page is not allocated, so we cannot take a reference.
          * Count == -1: Reference count would wrap, which is invalid.
          */
-        if ( unlikely(((x + 1) & PGC_count_mask) <= 1) )
+        if ( unlikely(((x + nr) & PGC_count_mask) <= nr) )
             return NULL;
     }
-    while ( (y = cmpxchg(&page->count_info, x, x + 1)) != x );
+    while ( (y = cmpxchg(&page->count_info, x, x + nr)) != x );
 
     owner = page_get_owner(page);
     ASSERT(owner);
@@ -1483,34 +1495,53 @@ struct domain *page_get_owner_and_reference(struct page_info *page)
     return owner;
 }
 
-void put_page(struct page_info *page)
+struct domain *page_get_owner_and_reference(struct page_info *page)
+{
+    return page_get_owner_and_nr_reference(page, 1);
+}
+
+void put_page_nr(struct page_info *page, unsigned long nr)
 {
     unsigned long nx, x, y = page->count_info;
 
     do {
-        ASSERT((y & PGC_count_mask) != 0);
+        ASSERT((y & PGC_count_mask) >= nr);
         x  = y;
-        nx = x - 1;
+        nx = x - nr;
     }
     while ( unlikely((y = cmpxchg(&page->count_info, x, nx)) != x) );
 
     if ( unlikely((nx & PGC_count_mask) == 0) )
     {
-        free_domheap_page(page);
+        if ( unlikely(nx & PGC_static) )
+            free_domstatic_page(page);
+        else
+            free_domheap_page(page);
     }
 }
 
-bool get_page(struct page_info *page, const struct domain *domain)
+void put_page(struct page_info *page)
 {
-    const struct domain *owner = page_get_owner_and_reference(page);
+    put_page_nr(page, 1);
+}
+
+bool get_page_nr(struct page_info *page, const struct domain *domain,
+                 unsigned long nr)
+{
+    const struct domain *owner = page_get_owner_and_nr_reference(page, nr);
 
     if ( likely(owner == domain) )
         return true;
 
     if ( owner != NULL )
-        put_page(page);
+        put_page_nr(page, nr);
 
     return false;
+}
+
+bool get_page(struct page_info *page, const struct domain *domain)
+{
+    return get_page_nr(page, domain, 1);
 }
 
 /* Common code requires get_page_type and put_page_type.

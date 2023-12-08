@@ -20,8 +20,10 @@
  */
 
 #include <xen/delay.h>
+#include <xen/iommu.h>
 #include <xen/mm.h>
 #include <xen/param.h>
+#include <xen/rangeset.h>
 #include <xen/serial.h>
 #include <xen/timer.h>
 #include <xen/types.h>
@@ -110,6 +112,7 @@ enum {
 enum {
     XHCI_TRB_CC_SUCCESS = 1,
     XHCI_TRB_CC_TRB_ERR = 5,
+    XHCI_TRB_CC_SHORT_PACKET = 13,
 };
 
 /* DbC endpoint types */
@@ -230,6 +233,12 @@ struct dbc_work_ring {
     uint64_t dma;
 };
 
+enum xhci_share {
+    XHCI_SHARE_HWDOM = 0,
+    XHCI_SHARE_NONE,
+    XHCI_SHARE_ANY
+};
+
 struct dbc {
     struct dbc_reg __iomem *dbc_reg;
     struct xhci_dbc_ctx *dbc_ctx;
@@ -238,15 +247,21 @@ struct dbc {
     struct xhci_trb_ring dbc_oring;
     struct xhci_trb_ring dbc_iring;
     struct dbc_work_ring dbc_owork;
+    struct dbc_work_ring dbc_iwork;
     struct xhci_string_descriptor *dbc_str;
 
     pci_sbdf_t sbdf;
-    uint64_t xhc_mmio_phys;
+    uint64_t bar_val;
     uint64_t xhc_dbc_offset;
     void __iomem *xhc_mmio;
 
+    bool enable; /* whether dbgp=xhci was set at all */
     bool open;
+    bool suspended;
+    enum xhci_share share;
     unsigned int xhc_num; /* look for n-th xhc */
+    /* state saved across suspend */
+    uint16_t pci_cr;
 };
 
 static void *dbc_sys_map_xhc(uint64_t phys, size_t size)
@@ -346,8 +361,9 @@ static bool __init dbc_init_xhc(struct dbc *dbc)
 
     pci_conf_write16(dbc->sbdf, PCI_COMMAND, cmd);
 
-    dbc->xhc_mmio_phys = (bar0 & PCI_BASE_ADDRESS_MEM_MASK) | (bar1 << 32);
-    dbc->xhc_mmio = dbc_sys_map_xhc(dbc->xhc_mmio_phys, xhc_mmio_size);
+    dbc->bar_val = bar0 | (bar1 << 32);
+    dbc->xhc_mmio = dbc_sys_map_xhc(dbc->bar_val & PCI_BASE_ADDRESS_MEM_MASK,
+                                    xhc_mmio_size);
 
     if ( dbc->xhc_mmio == NULL )
         return false;
@@ -442,6 +458,16 @@ static void xhci_trb_norm_set_ioc(struct xhci_trb *trb)
     trb->ctrl |= 0x20;
 }
 
+static uint64_t xhci_trb_norm_buf(const struct xhci_trb *trb)
+{
+    return trb->params;
+}
+
+static uint32_t xhci_trb_norm_len(const struct xhci_trb *trb)
+{
+    return trb->status & 0x1FFFF;
+}
+
 /**
  * Fields for Transfer Event TRBs (see section 6.4.2.1). Note that event
  * TRBs are read-only from software
@@ -449,6 +475,17 @@ static void xhci_trb_norm_set_ioc(struct xhci_trb *trb)
 static uint64_t xhci_trb_tfre_ptr(const struct xhci_trb *trb)
 {
     return trb->params;
+}
+
+static uint32_t xhci_trb_tfre_cc(const struct xhci_trb *trb)
+{
+    return trb->status >> 24;
+}
+
+/* Amount of data _not_ transferred */
+static uint32_t xhci_trb_tfre_len(const struct xhci_trb *trb)
+{
+    return trb->status & 0x1FFFF;
 }
 
 /* Fields for link TRBs (section 6.4.4.1) */
@@ -492,6 +529,14 @@ static bool xhci_trb_ring_full(const struct xhci_trb_ring *ring)
     return ((ring->enq + 1) & (DBC_TRB_RING_CAP - 1)) == ring->deq;
 }
 
+static unsigned int xhci_trb_ring_size(const struct xhci_trb_ring *ring)
+{
+    if ( ring->enq >= ring->deq )
+        return ring->enq - ring->deq;
+
+    return DBC_TRB_RING_CAP - ring->deq + ring->enq;
+}
+
 static bool dbc_work_ring_full(const struct dbc_work_ring *ring)
 {
     return ((ring->enq + 1) & (DBC_WORK_RING_CAP - 1)) == ring->deq;
@@ -503,6 +548,23 @@ static unsigned int dbc_work_ring_size(const struct dbc_work_ring *ring)
         return ring->enq - ring->deq;
 
     return DBC_WORK_RING_CAP - ring->deq + ring->enq;
+}
+
+static unsigned int dbc_work_ring_space_to_end(const struct dbc_work_ring *ring)
+{
+    if ( ring->enq >= ring->deq )
+        return DBC_WORK_RING_CAP - ring->enq;
+
+    return ring->deq - ring->enq;
+}
+
+static void dbc_ring_doorbell(struct dbc *dbc, int doorbell)
+{
+    uint32_t __iomem *db_reg = &dbc->dbc_reg->db;
+    uint32_t db = (readl(db_reg) & ~DBC_DOORBELL_TARGET_MASK) |
+                  (doorbell << DBC_DOORBELL_TARGET_SHIFT);
+
+    writel(db, db_reg);
 }
 
 static void dbc_push_trb(struct dbc *dbc, struct xhci_trb_ring *ring,
@@ -565,6 +627,31 @@ static unsigned int dbc_push_work(struct dbc *dbc, struct dbc_work_ring *ring,
     return i;
 }
 
+static void dbc_rx_trb(struct dbc *dbc, struct xhci_trb *trb,
+                       uint64_t not_transferred)
+{
+    struct dbc_work_ring *ring = &dbc->dbc_iwork;
+    unsigned int rx_len;
+    unsigned int end, start = ring->enq;
+
+    if ( xhci_trb_type(trb) != XHCI_TRB_NORM )
+        /* Can be Link TRB for example. */
+        return;
+
+    ASSERT(xhci_trb_norm_buf(trb) == ring->dma + ring->enq);
+    ASSERT(xhci_trb_norm_len(trb) >= not_transferred);
+    rx_len = xhci_trb_norm_len(trb) - not_transferred;
+
+    /* It can hit the ring end, but should not wrap around. */
+    ASSERT(ring->enq + rx_len <= DBC_WORK_RING_CAP);
+    ring->enq = (ring->enq + rx_len) & (DBC_WORK_RING_CAP - 1);
+
+    end = ring->enq;
+
+    if ( end > start )
+        cache_flush(&ring->buf[start], end - start);
+}
+
 /*
  * Note that if IN transfer support is added, then this
  * will need to be changed; it assumes an OUT transfer ring only
@@ -574,6 +661,7 @@ static void dbc_pop_events(struct dbc *dbc)
     struct dbc_reg *reg = dbc->dbc_reg;
     struct xhci_trb_ring *er = &dbc->dbc_ering;
     struct xhci_trb_ring *tr = &dbc->dbc_oring;
+    struct xhci_trb_ring *ir = &dbc->dbc_iring;
     struct xhci_trb *event = &er->trb[er->deq];
     uint64_t erdp = readq(&reg->erdp);
     uint32_t portsc;
@@ -598,6 +686,14 @@ static void dbc_pop_events(struct dbc *dbc)
             {
                 trb_idx = (event_ptr - tr->dma) >> XHCI_TRB_SHIFT;
                 tr->deq = (trb_idx + 1) & (DBC_TRB_RING_CAP - 1);
+            }
+            else if ( event_ptr - ir->dma < DBC_TRB_RING_BYTES )
+            {
+                trb_idx = (event_ptr - ir->dma) >> XHCI_TRB_SHIFT;
+                if ( xhci_trb_tfre_cc(event) == XHCI_TRB_CC_SUCCESS ||
+                     xhci_trb_tfre_cc(event) == XHCI_TRB_CC_SHORT_PACKET )
+                    dbc_rx_trb(dbc, &ir->trb[trb_idx], xhci_trb_tfre_len(event));
+                ir->deq = (trb_idx + 1) & (DBC_TRB_RING_CAP - 1);
             }
             else
                 dbc_alert("event: TRB 0x%lx not found in any ring\n",
@@ -869,6 +965,7 @@ static bool __init dbc_open(struct dbc *dbc)
         return false;
 
     dbc_init_work_ring(dbc, &dbc->dbc_owork);
+    dbc_init_work_ring(dbc, &dbc->dbc_iwork);
     dbc_enable_dbc(dbc);
     dbc->open = true;
 
@@ -876,13 +973,59 @@ static bool __init dbc_open(struct dbc *dbc)
 }
 
 /*
- * Ensure DbC is still running, handle events, and possibly re-enable if cable
- * was re-plugged. Returns true if DbC is operational.
+ * Ensure DbC is still running, handle events, and possibly
+ * re-enable/re-configure if cable was re-plugged or controller was reset.
+ * Returns true if DbC is operational.
  */
 static bool dbc_ensure_running(struct dbc *dbc)
 {
     struct dbc_reg *reg = dbc->dbc_reg;
     uint32_t ctrl;
+    uint16_t cmd;
+
+    if ( dbc->suspended )
+        return false;
+
+    if ( dbc->share != XHCI_SHARE_NONE )
+    {
+        /*
+         * Re-enable memory decoding and later bus mastering, if dom0 (or
+         * other) disabled it in the meantime.
+         */
+        cmd = pci_conf_read16(dbc->sbdf, PCI_COMMAND);
+        if ( !(cmd & PCI_COMMAND_MEMORY) )
+        {
+            cmd |= PCI_COMMAND_MEMORY;
+            pci_conf_write16(dbc->sbdf, PCI_COMMAND, cmd);
+        }
+
+        /*
+         * FIXME: Make Linux coordinate XHCI reset, so the DbC driver can
+         * prepare for it properly, instead of only detecting it after the
+         * fact. See EHCI driver for similar handling.
+         */
+        if ( dbc->open && !(readl(&reg->ctrl) & (1U << DBC_CTRL_DCE)) )
+        {
+            if ( !dbc_init_dbc(dbc) )
+                return false;
+
+            dbc_init_work_ring(dbc, &dbc->dbc_owork);
+            dbc_enable_dbc(dbc);
+        }
+        else
+        {
+            /*
+             * dbc_init_dbc() takes care about it, so check only if it wasn't
+             * called.
+             */
+            cmd = pci_conf_read16(dbc->sbdf, PCI_COMMAND);
+            if ( !(cmd & PCI_COMMAND_MASTER) )
+            {
+                cmd |= PCI_COMMAND_MASTER;
+                pci_conf_write16(dbc->sbdf, PCI_COMMAND, cmd);
+            }
+        }
+    }
 
     dbc_pop_events(dbc);
 
@@ -897,6 +1040,8 @@ static bool dbc_ensure_running(struct dbc *dbc)
         writel(ctrl | (1U << DBC_CTRL_DRC), &reg->ctrl);
         writel(readl(&reg->portsc) | (1U << DBC_PSC_PED), &reg->portsc);
         wmb();
+        dbc_ring_doorbell(dbc, dbc->dbc_iring.db);
+        dbc_ring_doorbell(dbc, dbc->dbc_oring.db);
     }
 
     return true;
@@ -914,10 +1059,6 @@ static bool dbc_ensure_running(struct dbc *dbc)
 static void dbc_flush(struct dbc *dbc, struct xhci_trb_ring *trb,
                       struct dbc_work_ring *wrk)
 {
-    struct dbc_reg *reg = dbc->dbc_reg;
-    uint32_t db = (readl(&reg->db) & ~DBC_DOORBELL_TARGET_MASK) |
-                  (trb->db << DBC_DOORBELL_TARGET_SHIFT);
-
     if ( xhci_trb_ring_full(trb) )
         return;
 
@@ -939,6 +1080,33 @@ static void dbc_flush(struct dbc *dbc, struct xhci_trb_ring *trb,
             wrk->deq = wrk->enq;
         }
     }
+
+    wmb();
+    dbc_ring_doorbell(dbc, trb->db);
+}
+
+/**
+ * Ensure DbC has a pending transfer TRB to receive data into.
+ *
+ * @param dbc the dbc to flush
+ * @param trb the ring for the TRBs to transfer
+ * @param wrk the work ring to receive data into
+ */
+static void dbc_enqueue_in(struct dbc *dbc, struct xhci_trb_ring *trb,
+                           struct dbc_work_ring *wrk)
+{
+    struct dbc_reg *reg = dbc->dbc_reg;
+    uint32_t db = (readl(&reg->db) & 0xFFFF00FF) | (trb->db << 8);
+
+    /* Check if there is already queued TRB */
+    if ( xhci_trb_ring_size(trb) >= 1 )
+        return;
+
+    if ( dbc_work_ring_full(wrk) )
+        return;
+
+    dbc_push_trb(dbc, trb, wrk->dma + wrk->enq,
+                 dbc_work_ring_space_to_end(wrk));
 
     wmb();
     writel(db, &reg->db);
@@ -967,6 +1135,19 @@ static int64_t dbc_putc(struct dbc *dbc, char c)
     return 1;
 }
 
+static int dbc_getc(struct dbc *dbc, char *c)
+{
+    struct dbc_work_ring *wrk = &dbc->dbc_iwork;
+
+    if ( dbc_work_ring_size(wrk) == 0 )
+        return 0;
+
+    *c = wrk->buf[wrk->deq];
+    wrk->deq = (wrk->deq + 1) & (DBC_WORK_RING_CAP - 1);
+
+    return 1;
+}
+
 struct dbc_uart {
     struct dbc dbc;
     struct timer timer;
@@ -985,9 +1166,15 @@ static void cf_check dbc_uart_poll(void *data)
     if ( spin_trylock_irqsave(&port->tx_lock, flags) )
     {
         if ( dbc_ensure_running(dbc) )
+        {
             dbc_flush(dbc, &dbc->dbc_oring, &dbc->dbc_owork);
+            dbc_enqueue_in(dbc, &dbc->dbc_iring, &dbc->dbc_iwork);
+        }
         spin_unlock_irqrestore(&port->tx_lock, flags);
     }
+
+    while ( dbc_work_ring_size(&dbc->dbc_iwork) )
+        serial_rx_interrupt(port, guest_cpu_user_regs());
 
     serial_tx_interrupt(port, guest_cpu_user_regs());
     set_timer(&uart->timer, NOW() + MICROSECS(DBC_POLL_INTERVAL));
@@ -1007,10 +1194,40 @@ static void __init cf_check dbc_uart_init_postirq(struct serial_port *port)
     init_timer(&uart->timer, dbc_uart_poll, port, 0);
     set_timer(&uart->timer, NOW() + MILLISECS(1));
 
-    if ( pci_ro_device(0, uart->dbc.sbdf.bus, uart->dbc.sbdf.devfn) )
-        printk(XENLOG_WARNING
-               "Failed to mark read-only %pp used for XHCI console\n",
-               &uart->dbc.sbdf);
+    switch ( uart->dbc.share )
+    {
+    case XHCI_SHARE_NONE:
+        if ( pci_ro_device(0, uart->dbc.sbdf.bus, uart->dbc.sbdf.devfn) )
+            printk(XENLOG_WARNING
+                   "Failed to mark read-only %pp used for XHCI console\n",
+                   &uart->dbc.sbdf);
+        break;
+    case XHCI_SHARE_HWDOM:
+        if ( pci_hide_device(0, uart->dbc.sbdf.bus, uart->dbc.sbdf.devfn) )
+            printk(XENLOG_WARNING
+                   "Failed to hide %pp used for XHCI console\n",
+                   &uart->dbc.sbdf);
+        break;
+    case XHCI_SHARE_ANY:
+        /* Do not hide. */
+        break;
+    }
+#ifdef CONFIG_X86
+    /*
+     * This marks the whole page as R/O, which may include other registers
+     * unrelated to DbC. Xen needs only DbC area protected, but it seems
+     * Linux's XHCI driver (as of 5.18) works without writting to the whole
+     * page, so keep it simple.
+     */
+    if ( rangeset_add_range(mmio_ro_ranges,
+                PFN_DOWN((uart->dbc.bar_val & PCI_BASE_ADDRESS_MEM_MASK) +
+                         uart->dbc.xhc_dbc_offset),
+                PFN_UP((uart->dbc.bar_val & PCI_BASE_ADDRESS_MEM_MASK) +
+                       uart->dbc.xhc_dbc_offset +
+                sizeof(*uart->dbc.dbc_reg)) - 1) )
+        printk(XENLOG_INFO
+               "Error while adding MMIO range of device to mmio_ro_ranges\n");
+#endif
 }
 
 static int cf_check dbc_uart_tx_ready(struct serial_port *port)
@@ -1027,6 +1244,12 @@ static void cf_check dbc_uart_putc(struct serial_port *port, char c)
     dbc_putc(&uart->dbc, c);
 }
 
+static int cf_check dbc_uart_getc(struct serial_port *port, char *c)
+{
+    struct dbc_uart *uart = port->uart;
+    return dbc_getc(&uart->dbc, c);
+}
+
 static void cf_check dbc_uart_flush(struct serial_port *port)
 {
     s_time_t goal;
@@ -1041,38 +1264,80 @@ static void cf_check dbc_uart_flush(struct serial_port *port)
         set_timer(&uart->timer, goal);
 }
 
+static void cf_check dbc_uart_suspend(struct serial_port *port)
+{
+    struct dbc_uart *uart = port->uart;
+    struct dbc *dbc = &uart->dbc;
+
+    dbc_pop_events(dbc);
+    stop_timer(&uart->timer);
+    dbc->pci_cr = pci_conf_read16(dbc->sbdf, PCI_COMMAND);
+    dbc->suspended = true;
+}
+
+static void cf_check dbc_uart_resume(struct serial_port *port)
+{
+    struct dbc_uart *uart = port->uart;
+    struct dbc *dbc = &uart->dbc;
+
+    pci_conf_write32(dbc->sbdf, PCI_BASE_ADDRESS_0, dbc->bar_val & 0xFFFFFFFF);
+    pci_conf_write32(dbc->sbdf, PCI_BASE_ADDRESS_1, dbc->bar_val >> 32);
+    pci_conf_write16(dbc->sbdf, PCI_COMMAND, dbc->pci_cr);
+
+    if ( !dbc_init_dbc(dbc) )
+    {
+        dbc_error("resume failed\n");
+        return;
+    }
+
+    dbc_enable_dbc(dbc);
+    dbc->suspended = false;
+    dbc_flush(dbc, &dbc->dbc_oring, &dbc->dbc_owork);
+    set_timer(&uart->timer, NOW() + MICROSECS(DBC_POLL_INTERVAL));
+}
+
 static struct uart_driver dbc_uart_driver = {
     .init_preirq = dbc_uart_init_preirq,
     .init_postirq = dbc_uart_init_postirq,
     .tx_ready = dbc_uart_tx_ready,
     .putc = dbc_uart_putc,
+    .getc = dbc_uart_getc,
     .flush = dbc_uart_flush,
+    .suspend = dbc_uart_suspend,
+    .resume = dbc_uart_resume,
 };
 
 /* Those are accessed via DMA. */
-static struct xhci_trb evt_trb[DBC_TRB_RING_CAP];
-static struct xhci_trb out_trb[DBC_TRB_RING_CAP];
-static struct xhci_trb in_trb[DBC_TRB_RING_CAP];
-static struct xhci_erst_segment erst __aligned(16);
-static struct xhci_dbc_ctx ctx __aligned(16);
-static uint8_t out_wrk_buf[DBC_WORK_RING_CAP];
-static struct xhci_string_descriptor str_buf[DBC_STRINGS_COUNT];
+struct dbc_dma_bufs {
+    struct xhci_trb evt_trb[DBC_TRB_RING_CAP];
+    struct xhci_trb out_trb[DBC_TRB_RING_CAP];
+    struct xhci_trb in_trb[DBC_TRB_RING_CAP];
+    uint8_t out_wrk_buf[DBC_WORK_RING_CAP];
+    uint8_t in_wrk_buf[DBC_WORK_RING_CAP];
+    struct xhci_erst_segment erst __aligned(16);
+    struct xhci_dbc_ctx ctx __aligned(16);
+    struct xhci_string_descriptor str_buf[DBC_STRINGS_COUNT];
+    /*
+     * Don't place anything else on this page - it will be
+     * DMA-reachable by the USB controller.
+     */
+};
+static struct dbc_dma_bufs __section(".bss.page_aligned") __aligned(PAGE_SIZE)
+    dbc_dma_bufs;
 
-static char __initdata opt_dbgp[30];
-
-string_param("dbgp", opt_dbgp);
-
-void __init xhci_dbc_uart_init(void)
+static int __init cf_check xhci_parse_dbgp(const char *opt_dbgp)
 {
     struct dbc_uart *uart = &dbc_uart;
     struct dbc *dbc = &uart->dbc;
-    const char *e;
+    const char *e, *opt;
+    int val;
 
     if ( strncmp(opt_dbgp, "xhci", 4) )
-        return;
+        return 0;
 
     memset(dbc, 0, sizeof(*dbc));
 
+    e = &opt_dbgp[4];
     if ( isdigit(opt_dbgp[4]) )
     {
         dbc->xhc_num = simple_strtoul(opt_dbgp + 4, &e, 10);
@@ -1082,27 +1347,80 @@ void __init xhci_dbc_uart_init(void)
         unsigned int bus, slot, func;
 
         e = parse_pci(opt_dbgp + 8, NULL, &bus, &slot, &func);
-        if ( !e || *e )
+        if ( !e || (*e && *e != ',') )
         {
             printk(XENLOG_ERR
                    "Invalid dbgp= PCI device spec: '%s'\n",
                    opt_dbgp + 8);
-            return;
+            return -EINVAL;
         }
 
         dbc->sbdf = PCI_SBDF(0, bus, slot, func);
     }
+    opt = e;
 
-    dbc->dbc_ctx = &ctx;
-    dbc->dbc_erst = &erst;
-    dbc->dbc_ering.trb = evt_trb;
-    dbc->dbc_oring.trb = out_trb;
-    dbc->dbc_iring.trb = in_trb;
-    dbc->dbc_owork.buf = out_wrk_buf;
-    dbc->dbc_str = str_buf;
+    /* other options */
+    while ( *opt == ',' )
+    {
+        opt++;
+        e = strchr(opt, ',');
+        if ( !e )
+            e = strchr(opt, '\0');
+
+        if ( (val = parse_boolean("share", opt, e)) != -1 )
+        {
+            if ( val == -2 && !cmdline_strcmp(opt + 6, "hwdom") )
+                dbc->share = XHCI_SHARE_HWDOM;
+            else if ( val == 0 )
+                dbc->share = XHCI_SHARE_NONE;
+            else if ( val == 1 )
+                dbc->share = XHCI_SHARE_ANY;
+            else
+                break;
+        }
+        else
+            break;
+
+        opt = e;
+    }
+
+    if ( *opt )
+    {
+        printk(XENLOG_ERR "Invalid dbgp= parameters: '%s'\n", opt);
+        return -EINVAL;
+    }
+
+    dbc->enable = true;
+
+    return 0;
+}
+custom_param("dbgp", xhci_parse_dbgp);
+
+void __init xhci_dbc_uart_init(void)
+{
+    struct dbc_uart *uart = &dbc_uart;
+    struct dbc *dbc = &uart->dbc;
+
+    if ( !dbc->enable )
+        return;
+
+    dbc->dbc_ctx = &dbc_dma_bufs.ctx;
+    dbc->dbc_erst = &dbc_dma_bufs.erst;
+    dbc->dbc_ering.trb = dbc_dma_bufs.evt_trb;
+    dbc->dbc_oring.trb = dbc_dma_bufs.out_trb;
+    dbc->dbc_iring.trb = dbc_dma_bufs.in_trb;
+    dbc->dbc_owork.buf = dbc_dma_bufs.out_wrk_buf;
+    dbc->dbc_iwork.buf = dbc_dma_bufs.in_wrk_buf;
+    dbc->dbc_str = dbc_dma_bufs.str_buf;
 
     if ( dbc_open(dbc) )
-        serial_register_uart(SERHND_DBGP, &dbc_uart_driver, &dbc_uart);
+    {
+        iommu_add_extra_reserved_device_memory(
+                PFN_DOWN(virt_to_maddr(&dbc_dma_bufs)),
+                PFN_UP(sizeof(dbc_dma_bufs)),
+                uart->dbc.sbdf);
+        serial_register_uart(SERHND_XHCI, &dbc_uart_driver, &dbc_uart);
+    }
 }
 
 #ifdef DBC_DEBUG

@@ -282,6 +282,7 @@ void paging_mark_pfn_dirty(struct domain *d, pfn_t pfn)
     if ( unlikely(!VALID_M2P(pfn_x(pfn))) )
         return;
 
+    BUILD_BUG_ON(paging_logdirty_levels() != 4);
     i1 = L1_LOGDIRTY_IDX(pfn);
     i2 = L2_LOGDIRTY_IDX(pfn);
     i3 = L3_LOGDIRTY_IDX(pfn);
@@ -442,8 +443,8 @@ static int paging_log_dirty_op(struct domain *d,
               d->arch.paging.preempt.op != sc->op )
     {
         paging_unlock(d);
-        ASSERT(!resuming);
-        domain_unpause(d);
+        if ( !resuming )
+            domain_unpause(d);
         return -EBUSY;
     }
 
@@ -976,6 +977,49 @@ int __init paging_set_allocation(struct domain *d, unsigned int pages,
     return rc;
 }
 #endif
+
+int arch_get_paging_mempool_size(struct domain *d, uint64_t *size)
+{
+    int rc;
+
+    if ( is_pv_domain(d) )                 /* TODO: Relax in due course */
+        return -EOPNOTSUPP;
+
+    if ( hap_enabled(d) )
+        rc = hap_get_allocation_bytes(d, size);
+    else
+        rc = shadow_get_allocation_bytes(d, size);
+
+    return rc;
+}
+
+int arch_set_paging_mempool_size(struct domain *d, uint64_t size)
+{
+    unsigned long pages = size >> PAGE_SHIFT;
+    bool preempted = false;
+    int rc;
+
+    if ( is_pv_domain(d) )                 /* TODO: Relax in due course */
+        return -EOPNOTSUPP;
+
+    if ( size & ~PAGE_MASK ||              /* Non page-sized request? */
+         pages != (unsigned int)pages )    /* Overflow $X_set_allocation()? */
+        return -EINVAL;
+
+    paging_lock(d);
+    if ( hap_enabled(d) )
+        rc = hap_set_allocation(d, pages, &preempted);
+    else
+        rc = shadow_set_allocation(d, pages, &preempted);
+    paging_unlock(d);
+
+    /*
+     * TODO: Adjust $X_set_allocation() so this is true.
+    ASSERT(preempted == (rc == -ERESTART));
+     */
+
+    return preempted ? -ERESTART : rc;
+}
 
 /*
  * Local variables:

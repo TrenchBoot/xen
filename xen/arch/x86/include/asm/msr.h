@@ -6,8 +6,9 @@
 #include <xen/types.h>
 #include <xen/percpu.h>
 #include <xen/errno.h>
+#include <xen/kernel.h>
 
-#include <xen/lib/x86/msr.h>
+#include <xen/lib/x86/cpu-policy.h>
 
 #include <asm/asm_defns.h>
 #include <asm/cpufeature.h>
@@ -277,14 +278,7 @@ static inline void wrmsr_tsc_aux(uint32_t val)
     }
 }
 
-uint64_t msr_spec_ctrl_valid_bits(const struct cpuid_policy *cp);
-
-extern struct msr_policy     raw_msr_policy,
-                            host_msr_policy,
-                          pv_max_msr_policy,
-                          pv_def_msr_policy,
-                         hvm_max_msr_policy,
-                         hvm_def_msr_policy;
+uint64_t msr_spec_ctrl_valid_bits(const struct cpu_policy *cp);
 
 /* Container object for per-vCPU MSRs */
 struct vcpu_msrs
@@ -378,8 +372,16 @@ struct vcpu_msrs
     /*
      * 0xc001011f - MSR_VIRT_SPEC_CTRL (if !X86_FEATURE_AMD_SSBD)
      *
-     * AMD only. Guest selected value, context switched on guest VM
-     * entry/exit.
+     * AMD only, used on Zen1 and older hardware (pre-AMD_SSBD).  Holds the
+     * the guests value.
+     *
+     * In the default case, Xen doesn't protect itself from SSB, and guests
+     * are expected to use VIRT_SPEC_CTRL.SSBD=1 sparingly.  Xen therefore
+     * runs in the guest kernel's choice of SSBD.
+     *
+     * However, if the global enable `spec-ctrl=ssbd` is selected, hardware is
+     * always configured with SSBD=1 and the guest's setting is never loaded
+     * into hardware.
      */
     struct {
         uint32_t raw;
@@ -395,8 +397,6 @@ struct vcpu_msrs
     uint32_t dr_mask[4];
 };
 
-void init_guest_msr_policy(void);
-int init_domain_msr_policy(struct domain *d);
 int init_vcpu_msr_policy(struct vcpu *v);
 
 /*

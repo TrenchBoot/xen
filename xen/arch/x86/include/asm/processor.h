@@ -628,7 +628,7 @@ static inline uint8_t get_cpu_family(uint32_t raw, uint8_t *model,
     return fam;
 }
 
-extern int8_t opt_tsx, cpu_has_tsx_ctrl;
+extern int8_t opt_tsx;
 extern bool rtm_disabled;
 void tsx_init(void);
 
@@ -640,6 +640,8 @@ enum ap_boot_method {
     AP_BOOT_SKINIT,
 };
 extern enum ap_boot_method ap_boot_method;
+
+void amd_check_zenbleed(void);
 
 #endif /* !__ASSEMBLY__ */
 

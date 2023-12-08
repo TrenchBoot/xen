@@ -45,6 +45,7 @@
 
 #define MSR_PRED_CMD                        0x00000049
 #define  PRED_CMD_IBPB                      (_AC(1, ULL) <<  0)
+#define  PRED_CMD_SBPB                      (_AC(1, ULL) <<  7)
 
 #define MSR_PPIN_CTL                        0x0000004e
 #define  PPIN_LOCKOUT                       (_AC(1, ULL) <<  0)
@@ -66,7 +67,7 @@
 
 #define MSR_ARCH_CAPABILITIES               0x0000010a
 #define  ARCH_CAPS_RDCL_NO                  (_AC(1, ULL) <<  0)
-#define  ARCH_CAPS_IBRS_ALL                 (_AC(1, ULL) <<  1)
+#define  ARCH_CAPS_EIBRS                    (_AC(1, ULL) <<  1)
 #define  ARCH_CAPS_RSBA                     (_AC(1, ULL) <<  2)
 #define  ARCH_CAPS_SKIP_L1DFL               (_AC(1, ULL) <<  3)
 #define  ARCH_CAPS_SSB_NO                   (_AC(1, ULL) <<  4)
@@ -85,6 +86,8 @@
 #define  ARCH_CAPS_RRSBA                    (_AC(1, ULL) << 19)
 #define  ARCH_CAPS_BHI_NO                   (_AC(1, ULL) << 20)
 #define  ARCH_CAPS_PBRSB_NO                 (_AC(1, ULL) << 24)
+#define  ARCH_CAPS_GDS_CTRL                 (_AC(1, ULL) << 25)
+#define  ARCH_CAPS_GDS_NO                   (_AC(1, ULL) << 26)
 
 #define MSR_FLUSH_CMD                       0x0000010b
 #define  FLUSH_CMD_L1D                      (_AC(1, ULL) <<  0)
@@ -103,6 +106,8 @@
 #define  MCU_OPT_CTRL_RTM_ALLOW             (_AC(1, ULL) <<  1)
 #define  MCU_OPT_CTRL_RTM_LOCKED            (_AC(1, ULL) <<  2)
 #define  MCU_OPT_CTRL_FB_CLEAR_DIS          (_AC(1, ULL) <<  3)
+#define  MCU_OPT_CTRL_GDS_MIT_DIS           (_AC(1, ULL) <<  4)
+#define  MCU_OPT_CTRL_GDS_MIT_LOCK          (_AC(1, ULL) <<  5)
 
 #define MSR_RTIT_OUTPUT_BASE                0x00000560
 #define MSR_RTIT_OUTPUT_MASK                0x00000561
@@ -205,6 +210,8 @@
 #define  VM_CR_SVM_DISABLE                  (_AC(1, ULL) <<  4)
 
 #define MSR_VIRT_SPEC_CTRL                  0xc001011f /* Layout matches MSR_SPEC_CTRL */
+
+#define MSR_AMD_CSTATE_CFG                  0xc0010296
 
 /*
  * Legacy MSR constants in need of cleanup.  No new MSRs below this comment.

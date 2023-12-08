@@ -38,6 +38,12 @@
 #include <conditional.h>
 #include "private.h"
 
+#ifdef CONFIG_X86
+#include <asm/pv/shim.h>
+#else
+#define pv_shim false
+#endif
+
 static uint32_t domain_sid(const struct domain *dom)
 {
     struct domain_security_struct *dsec = dom->ssid;
@@ -170,6 +176,9 @@ static int cf_check flask_domain_alloc_security(struct domain *d)
     if ( !dsec )
         return -ENOMEM;
 
+    /* Set as unlabeled then change as appropriate. */
+    dsec->sid = SECINITSID_UNLABELED;
+
     switch ( d->domain_id )
     {
     case DOMID_IDLE:
@@ -182,7 +191,13 @@ static int cf_check flask_domain_alloc_security(struct domain *d)
         dsec->sid = SECINITSID_DOMIO;
         break;
     default:
-        dsec->sid = SECINITSID_UNLABELED;
+        if ( domain_sid(current->domain) == SECINITSID_XENBOOT )
+        {
+            if ( d->is_privileged )
+                dsec->sid = SECINITSID_DOM0;
+            else if ( pv_shim )
+                dsec->sid = SECINITSID_DOMU;
+        }
     }
 
     dsec->self_sid = dsec->sid;
@@ -281,8 +296,7 @@ static int cf_check flask_evtchn_interdomain(
     rc = security_transition_sid(sid1, sid2, SECCLASS_EVENT, &newsid);
     if ( rc )
     {
-        printk("security_transition_sid failed, rc=%d, Dom%d\n",
-               -rc, d2->domain_id);
+        printk("security_transition_sid failed, rc=%d, %pd\n", -rc, d2);
         return rc;
     }
 
@@ -550,20 +564,36 @@ static int cf_check flask_domain_create(struct domain *d, uint32_t ssidref)
     struct domain_security_struct *dsec = d->ssid;
     static int dom0_created = 0;
 
-    if ( is_idle_domain(current->domain) && !dom0_created )
-    {
-        dsec->sid = SECINITSID_DOM0;
-        dom0_created = 1;
-    }
-    else
-    {
-        rc = avc_current_has_perm(ssidref, SECCLASS_DOMAIN,
-                          DOMAIN__CREATE, NULL);
-        if ( rc )
-            return rc;
+    /*
+     * If the null label is passed, then use the label from security context
+     * allocation. NB: if the label from the allocated security context is also
+     * null, the security server will use unlabeled_t for the domain.
+     */
+    if ( ssidref == 0 )
+        ssidref = dsec->sid;
 
-        dsec->sid = ssidref;
+    /*
+     * First check if the current domain is allowed to create the target domain
+     * type before making changes to the current state.
+     */
+    rc = avc_current_has_perm(ssidref, SECCLASS_DOMAIN, DOMAIN__CREATE, NULL);
+    if ( rc )
+        return rc;
+
+    /*
+     * The dom0_t label is expressed as a singleton label in the base policy.
+     * This cannot be enforced by the security server, therefore it will be
+     * enforced here.
+     */
+    if ( ssidref == SECINITSID_DOM0 )
+    {
+        if ( !dom0_created )
+            dom0_created = 1;
+        else
+            return -EINVAL;
     }
+
+    dsec->sid = ssidref;
     dsec->self_sid = dsec->sid;
 
     rc = security_transition_sid(dsec->sid, dsec->sid, SECCLASS_DOMAIN,
@@ -791,6 +821,12 @@ static int cf_check flask_domctl(struct domain *d, int cmd)
 
     case XEN_DOMCTL_get_cpu_policy:
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__GET_CPU_POLICY);
+
+    case XEN_DOMCTL_get_paging_mempool_size:
+        return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__GETPAGINGMEMPOOL);
+
+    case XEN_DOMCTL_set_paging_mempool_size:
+        return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__SETPAGINGMEMPOOL);
 
     default:
         return avc_unknown_permission("domctl", cmd);

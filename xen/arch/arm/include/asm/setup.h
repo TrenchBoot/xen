@@ -22,11 +22,38 @@ typedef enum {
     BOOTMOD_UNKNOWN
 }  bootmodule_kind;
 
+enum membank_type {
+    /*
+     * The MEMBANK_DEFAULT type refers to either reserved memory for the
+     * device/firmware (when the bank is in 'reserved_mem') or any RAM (when
+     * the bank is in 'mem').
+     */
+    MEMBANK_DEFAULT,
+    /*
+     * The MEMBANK_STATIC_DOMAIN type is used to indicate whether the memory
+     * bank is bound to a static Xen domain. It is only valid when the bank
+     * is in reserved_mem.
+     */
+    MEMBANK_STATIC_DOMAIN,
+    /*
+     * The MEMBANK_STATIC_HEAP type is used to indicate whether the memory
+     * bank is reserved as static heap. It is only valid when the bank is
+     * in reserved_mem.
+     */
+    MEMBANK_STATIC_HEAP,
+};
+
+/* Indicates the maximum number of characters(\0 included) for shm_id */
+#define MAX_SHM_ID_LENGTH 16
 
 struct membank {
     paddr_t start;
     paddr_t size;
-    bool xen_domain; /* whether the memory bank is bound to a Xen domain. */
+    enum membank_type type;
+#ifdef CONFIG_STATIC_SHM
+    char shm_id[MAX_SHM_ID_LENGTH];
+    unsigned int nr_shm_borrowers;
+#endif
 };
 
 struct meminfo {
@@ -77,6 +104,7 @@ struct bootinfo {
 #ifdef CONFIG_ACPI
     struct meminfo acpi;
 #endif
+    bool static_heap;
 };
 
 struct map_range_data
@@ -106,6 +134,7 @@ int acpi_make_efi_nodes(void *fdt, struct membank tbl_add[]);
 
 void create_domUs(void);
 void create_dom0(void);
+void alloc_static_evtchn(void);
 
 void discard_initial_modules(void);
 void fw_unreserved_regions(paddr_t s, paddr_t e,
@@ -136,6 +165,8 @@ u32 device_tree_get_u32(const void *fdt, int node,
 
 int map_range_to_domain(const struct dt_device_node *dev,
                         u64 addr, u64 len, void *data);
+
+extern const char __ro_after_init_start[], __ro_after_init_end[];
 
 #endif
 /*

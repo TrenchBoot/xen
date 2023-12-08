@@ -27,13 +27,6 @@
     CXX: clang++
     clang: y
 
-.clang-8-tmpl:
-  variables: &clang-8
-    CC: clang-8
-    CXX: clang++-8
-    LD: ld.lld-8
-    clang: y
-
 .x86-64-build-tmpl:
   <<: *build
   variables:
@@ -98,16 +91,6 @@
   variables:
     <<: *clang
 
-.clang-8-x86-64-build:
-  extends: .x86-64-build
-  variables:
-    <<: *clang-8
-
-.clang-8-x86-64-build-debug:
-  extends: .x86-64-build-debug
-  variables:
-    <<: *clang-8
-
 .clang-x86-32-build:
   extends: .x86-32-build
   variables:
@@ -123,7 +106,7 @@
   variables:
     XEN_TARGET_ARCH: arm32
   tags:
-    - x86_64
+    - arm64
 
 .arm32-cross-build:
   extends: .arm32-cross-build-tmpl
@@ -183,16 +166,6 @@ archlinux-gcc-debug:
   extends: .gcc-x86-64-build-debug
   variables:
     CONTAINER: archlinux:current
-
-centos-7-2-gcc:
-  extends: .gcc-x86-64-build
-  variables:
-    CONTAINER: centos:7.2
-
-centos-7-2-gcc-debug:
-  extends: .gcc-x86-64-build-debug
-  variables:
-    CONTAINER: centos:7.2
 
 centos-7-gcc:
   extends: .gcc-x86-64-build
@@ -254,16 +227,6 @@ debian-stretch-clang-debug:
   variables:
     CONTAINER: debian:stretch
 
-debian-stretch-clang-8:
-  extends: .clang-8-x86-64-build
-  variables:
-    CONTAINER: debian:stretch
-
-debian-stretch-clang-8-debug:
-  extends: .clang-8-x86-64-build-debug
-  variables:
-    CONTAINER: debian:stretch
-
 debian-stretch-gcc:
   extends: .gcc-x86-64-build
   variables:
@@ -274,18 +237,8 @@ debian-stretch-gcc-debug:
   variables:
     CONTAINER: debian:stretch
 
-debian-stretch-32-clang:
-  extends: .clang-x86-32-build
-  variables:
-    CONTAINER: debian:stretch-i386
-
 debian-stretch-32-clang-debug:
   extends: .clang-x86-32-build-debug
-  variables:
-    CONTAINER: debian:stretch-i386
-
-debian-stretch-32-gcc:
-  extends: .gcc-x86-32-build
   variables:
     CONTAINER: debian:stretch-i386
 
@@ -299,6 +252,8 @@ debian-buster-gcc-ibt:
   variables:
     CONTAINER: debian:buster-gcc-ibt
     RANDCONFIG: y
+    EXTRA_FIXED_RANDCONFIG: |
+      CONFIG_XEN_IBT=y
 
 debian-unstable-clang:
   extends: .clang-x86-64-build
@@ -307,16 +262,6 @@ debian-unstable-clang:
 
 debian-unstable-clang-debug:
   extends: .clang-x86-64-build-debug
-  variables:
-    CONTAINER: debian:unstable
-
-debian-unstable-clang-8:
-  extends: .clang-8-x86-64-build
-  variables:
-    CONTAINER: debian:unstable
-
-debian-unstable-clang-8-debug:
-  extends: .clang-8-x86-64-build-debug
   variables:
     CONTAINER: debian:unstable
 
@@ -342,18 +287,8 @@ debian-unstable-gcc-debug-randconfig:
     CONTAINER: debian:unstable
     RANDCONFIG: y
 
-debian-unstable-32-clang:
-  extends: .clang-x86-32-build
-  variables:
-    CONTAINER: debian:unstable-i386
-
 debian-unstable-32-clang-debug:
   extends: .clang-x86-32-build-debug
-  variables:
-    CONTAINER: debian:unstable-i386
-
-debian-unstable-32-gcc:
-  extends: .gcc-x86-32-build
   variables:
     CONTAINER: debian:unstable-i386
 
@@ -513,23 +448,23 @@ alpine-3.12-clang-debug:
 debian-unstable-gcc-arm32:
   extends: .gcc-arm32-cross-build
   variables:
-    CONTAINER: debian:unstable-arm32-gcc
+    CONTAINER: debian:unstable-arm64v8-arm32-gcc
 
 debian-unstable-gcc-arm32-debug:
   extends: .gcc-arm32-cross-build-debug
   variables:
-    CONTAINER: debian:unstable-arm32-gcc
+    CONTAINER: debian:unstable-arm64v8-arm32-gcc
 
 debian-unstable-gcc-arm32-randconfig:
   extends: .gcc-arm32-cross-build
   variables:
-    CONTAINER: debian:unstable-arm32-gcc
+    CONTAINER: debian:unstable-arm64v8-arm32-gcc
     RANDCONFIG: y
 
 debian-unstable-gcc-arm32-debug-randconfig:
   extends: .gcc-arm32-cross-build-debug
   variables:
-    CONTAINER: debian:unstable-arm32-gcc
+    CONTAINER: debian:unstable-arm64v8-arm32-gcc
     RANDCONFIG: y
 
 # Arm builds
@@ -566,6 +501,24 @@ alpine-3.12-gcc-debug-arm64:
   variables:
     CONTAINER: alpine:3.12-arm64v8
 
+alpine-3.12-gcc-arm64-staticmem:
+  extends: .gcc-arm64-build
+  variables:
+    CONTAINER: alpine:3.12-arm64v8
+    EXTRA_XEN_CONFIG: |
+      CONFIG_EXPERT=y
+      CONFIG_UNSUPPORTED=y
+      CONFIG_STATIC_MEMORY=y
+
+alpine-3.12-gcc-arm64-boot-cpupools:
+  extends: .gcc-arm64-build
+  variables:
+    CONTAINER: alpine:3.12-arm64v8
+    EXTRA_XEN_CONFIG: |
+      CONFIG_EXPERT=y
+      CONFIG_UNSUPPORTED=y
+      CONFIG_SCHED_NULL=y
+      CONFIG_BOOT_TIME_CPUPOOLS=y
 
 ## Test artifacts common
 
@@ -583,17 +536,6 @@ alpine-3.12-arm64-rootfs-export:
   artifacts:
     paths:
       - binaries/initrd.tar.gz
-  tags:
-    - arm64
-
-kernel-5.9.9-arm64-export:
-  extends: .test-jobs-artifact-common
-  image: registry.gitlab.com/xen-project/xen/tests-artifacts/kernel:5.9.9-arm64v8
-  script:
-    - mkdir binaries && cp /Image binaries/Image
-  artifacts:
-    paths:
-      - binaries/Image
   tags:
     - arm64
 

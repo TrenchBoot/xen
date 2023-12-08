@@ -319,7 +319,7 @@ const struct x86_emulate_ops *shadow_init_emulation(
     memset(sh_ctxt, 0, sizeof(*sh_ctxt));
 
     sh_ctxt->ctxt.regs = regs;
-    sh_ctxt->ctxt.cpuid = curr->domain->arch.cpuid;
+    sh_ctxt->ctxt.cpu_policy = curr->domain->arch.cpu_policy;
     sh_ctxt->ctxt.lma = hvm_long_mode_active(curr);
 
     /* Segment cache initialisation. Primed with CS. */
@@ -697,7 +697,9 @@ mfn_t sh_make_monitor_table(const struct vcpu *v, unsigned int shadow_levels)
     ASSERT(!pagetable_get_pfn(v->arch.hvm.monitor_table));
 
     /* Guarantee we can get the memory we need */
-    shadow_prealloc(d, SH_type_monitor_table, CONFIG_PAGING_LEVELS);
+    if ( !shadow_prealloc(d, SH_type_monitor_table, CONFIG_PAGING_LEVELS) )
+        return INVALID_MFN;
+
     m4mfn = shadow_alloc(d, SH_type_monitor_table, 0);
     mfn_to_page(m4mfn)->shadow_flags = 4;
 
@@ -812,7 +814,8 @@ static void cf_check sh_unshadow_for_p2m_change(
 
     /* Only previously present / valid entries need processing. */
     if ( !(oflags & _PAGE_PRESENT) ||
-         (!p2m_is_valid(p2mt) && !p2m_is_grant(p2mt)) )
+         (!p2m_is_valid(p2mt) && !p2m_is_grant(p2mt)) ||
+         !mfn_valid(omfn) )
         return;
 
     switch ( level )

@@ -66,7 +66,8 @@ boolean_param("force-ept", opt_force_ept);
 static void cf_check vmx_ctxt_switch_from(struct vcpu *v);
 static void cf_check vmx_ctxt_switch_to(struct vcpu *v);
 
-static int alloc_vlapic_mapping(void);
+static int  vmx_alloc_vlapic_mapping(struct domain *d);
+static void vmx_free_vlapic_mapping(struct domain *d);
 static void vmx_install_vlapic_mapping(struct vcpu *v);
 static void cf_check vmx_update_guest_cr(
     struct vcpu *v, unsigned int cr, unsigned int flags);
@@ -78,8 +79,6 @@ static int cf_check vmx_msr_read_intercept(
 static int cf_check vmx_msr_write_intercept(
     unsigned int msr, uint64_t msr_content);
 static void cf_check vmx_invlpg(struct vcpu *v, unsigned long linear);
-
-static mfn_t __read_mostly apic_access_mfn = INVALID_MFN_INITIALIZER;
 
 /* Values for domain's ->arch.hvm_domain.pi_ops.flags. */
 #define PI_CSW_FROM (1u << 0)
@@ -397,6 +396,142 @@ void vmx_pi_hooks_deassign(struct domain *d)
     domain_unpause(d);
 }
 
+static const struct lbr_info {
+    u32 base, count;
+} p4_lbr[] = {
+    { MSR_P4_LER_FROM_LIP,          1 },
+    { MSR_P4_LER_TO_LIP,            1 },
+    { MSR_P4_LASTBRANCH_TOS,        1 },
+    { MSR_P4_LASTBRANCH_0_FROM_LIP, NUM_MSR_P4_LASTBRANCH_FROM_TO },
+    { MSR_P4_LASTBRANCH_0_TO_LIP,   NUM_MSR_P4_LASTBRANCH_FROM_TO },
+    { 0, 0 }
+}, c2_lbr[] = {
+    { MSR_IA32_LASTINTFROMIP,       1 },
+    { MSR_IA32_LASTINTTOIP,         1 },
+    { MSR_C2_LASTBRANCH_TOS,        1 },
+    { MSR_C2_LASTBRANCH_0_FROM_IP,  NUM_MSR_C2_LASTBRANCH_FROM_TO },
+    { MSR_C2_LASTBRANCH_0_TO_IP,    NUM_MSR_C2_LASTBRANCH_FROM_TO },
+    { 0, 0 }
+}, nh_lbr[] = {
+    { MSR_IA32_LASTINTFROMIP,       1 },
+    { MSR_IA32_LASTINTTOIP,         1 },
+    { MSR_NHL_LBR_SELECT,           1 },
+    { MSR_NHL_LASTBRANCH_TOS,       1 },
+    { MSR_P4_LASTBRANCH_0_FROM_LIP, NUM_MSR_P4_LASTBRANCH_FROM_TO },
+    { MSR_P4_LASTBRANCH_0_TO_LIP,   NUM_MSR_P4_LASTBRANCH_FROM_TO },
+    { 0, 0 }
+}, sk_lbr[] = {
+    { MSR_IA32_LASTINTFROMIP,       1 },
+    { MSR_IA32_LASTINTTOIP,         1 },
+    { MSR_NHL_LBR_SELECT,           1 },
+    { MSR_NHL_LASTBRANCH_TOS,       1 },
+    { MSR_SKL_LASTBRANCH_0_FROM_IP, NUM_MSR_SKL_LASTBRANCH },
+    { MSR_SKL_LASTBRANCH_0_TO_IP,   NUM_MSR_SKL_LASTBRANCH },
+    { MSR_SKL_LASTBRANCH_0_INFO,    NUM_MSR_SKL_LASTBRANCH },
+    { 0, 0 }
+}, at_lbr[] = {
+    { MSR_IA32_LASTINTFROMIP,       1 },
+    { MSR_IA32_LASTINTTOIP,         1 },
+    { MSR_C2_LASTBRANCH_TOS,        1 },
+    { MSR_C2_LASTBRANCH_0_FROM_IP,  NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
+    { MSR_C2_LASTBRANCH_0_TO_IP,    NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
+    { 0, 0 }
+}, sm_lbr[] = {
+    { MSR_IA32_LASTINTFROMIP,       1 },
+    { MSR_IA32_LASTINTTOIP,         1 },
+    { MSR_SM_LBR_SELECT,            1 },
+    { MSR_SM_LASTBRANCH_TOS,        1 },
+    { MSR_C2_LASTBRANCH_0_FROM_IP,  NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
+    { MSR_C2_LASTBRANCH_0_TO_IP,    NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
+    { 0, 0 }
+}, gm_lbr[] = {
+    { MSR_IA32_LASTINTFROMIP,       1 },
+    { MSR_IA32_LASTINTTOIP,         1 },
+    { MSR_SM_LBR_SELECT,            1 },
+    { MSR_SM_LASTBRANCH_TOS,        1 },
+    { MSR_GM_LASTBRANCH_0_FROM_IP,  NUM_MSR_GM_LASTBRANCH_FROM_TO },
+    { MSR_GM_LASTBRANCH_0_TO_IP,    NUM_MSR_GM_LASTBRANCH_FROM_TO },
+    { 0, 0 }
+};
+static const struct lbr_info *__ro_after_init model_specific_lbr;
+
+static const struct lbr_info *__init get_model_specific_lbr(void)
+{
+    switch ( boot_cpu_data.x86 )
+    {
+    case 6:
+        switch ( boot_cpu_data.x86_model )
+        {
+        /* Core2 Duo */
+        case 0x0f:
+        /* Enhanced Core */
+        case 0x17:
+        /* Xeon 7400 */
+        case 0x1d:
+            return c2_lbr;
+        /* Nehalem */
+        case 0x1a: case 0x1e: case 0x1f: case 0x2e:
+        /* Westmere */
+        case 0x25: case 0x2c: case 0x2f:
+        /* Sandy Bridge */
+        case 0x2a: case 0x2d:
+        /* Ivy Bridge */
+        case 0x3a: case 0x3e:
+        /* Haswell */
+        case 0x3c: case 0x3f: case 0x45: case 0x46:
+        /* Broadwell */
+        case 0x3d: case 0x47: case 0x4f: case 0x56:
+            return nh_lbr;
+        /* Skylake */
+        case 0x4e: case 0x5e:
+        /* Xeon Scalable */
+        case 0x55:
+        /* Cannon Lake */
+        case 0x66:
+        /* Goldmont Plus */
+        case 0x7a:
+        /* Ice Lake */
+        case 0x6a: case 0x6c: case 0x7d: case 0x7e:
+        /* Tiger Lake */
+        case 0x8c: case 0x8d:
+        /* Tremont */
+        case 0x86:
+        /* Kaby Lake */
+        case 0x8e: case 0x9e:
+        /* Comet Lake */
+        case 0xa5: case 0xa6:
+            return sk_lbr;
+        /* Atom */
+        case 0x1c: case 0x26: case 0x27: case 0x35: case 0x36:
+            return at_lbr;
+        /* Silvermont */
+        case 0x37: case 0x4a: case 0x4d: case 0x5a: case 0x5d:
+        /* Xeon Phi Knights Landing */
+        case 0x57:
+        /* Xeon Phi Knights Mill */
+        case 0x85:
+        /* Airmont */
+        case 0x4c:
+            return sm_lbr;
+        /* Goldmont */
+        case 0x5c: case 0x5f:
+            return gm_lbr;
+        }
+        break;
+
+    case 15:
+        switch ( boot_cpu_data.x86_model )
+        {
+        /* Pentium4/Xeon with em64t */
+        case 3: case 4: case 6:
+            return p4_lbr;
+        }
+        break;
+    }
+
+    return NULL;
+}
+
 static int cf_check vmx_domain_initialise(struct domain *d)
 {
     static const struct arch_csw csw = {
@@ -404,6 +539,7 @@ static int cf_check vmx_domain_initialise(struct domain *d)
         .to   = vmx_ctxt_switch_to,
         .tail = vmx_do_resume,
     };
+    int rc;
 
     d->arch.ctxt_switch = &csw;
 
@@ -413,15 +549,24 @@ static int cf_check vmx_domain_initialise(struct domain *d)
      */
     d->arch.hvm.vmx.exec_sp = is_hardware_domain(d) || opt_ept_exec_sp;
 
+    if ( (rc = vmx_alloc_vlapic_mapping(d)) != 0 )
+        return rc;
+
     return 0;
+}
+
+static void cf_check vmx_domain_relinquish_resources(struct domain *d)
+{
+    vmx_free_vlapic_mapping(d);
 }
 
 static void cf_check domain_creation_finished(struct domain *d)
 {
     gfn_t gfn = gaddr_to_gfn(APIC_DEFAULT_PHYS_BASE);
+    mfn_t apic_access_mfn = d->arch.hvm.vmx.apic_access_mfn;
     bool ipat;
 
-    if ( mfn_eq(apic_access_mfn, INVALID_MFN) )
+    if ( mfn_eq(apic_access_mfn, _mfn(0)) )
         return;
 
     ASSERT(epte_get_entry_emt(d, gfn, apic_access_mfn, 0, &ipat,
@@ -593,7 +738,7 @@ void vmx_update_exception_bitmap(struct vcpu *v)
 
 static void cf_check vmx_cpuid_policy_changed(struct vcpu *v)
 {
-    const struct cpuid_policy *cp = v->domain->arch.cpuid;
+    const struct cpu_policy *cp = v->domain->arch.cpu_policy;
     int rc = 0;
 
     if ( opt_hvm_fep ||
@@ -2510,6 +2655,7 @@ static struct hvm_function_table __initdata_cf_clobber vmx_function_table = {
     .cpu_up_prepare       = vmx_cpu_up_prepare,
     .cpu_dead             = vmx_cpu_dead,
     .domain_initialise    = vmx_domain_initialise,
+    .domain_relinquish_resources = vmx_domain_relinquish_resources,
     .domain_creation_finished = domain_creation_finished,
     .vcpu_initialise      = vmx_vcpu_initialise,
     .vcpu_destroy         = vmx_vcpu_destroy,
@@ -2662,8 +2808,6 @@ static void __init ler_to_fixup_check(void);
  */
 static bool __init has_if_pschange_mc(void)
 {
-    uint64_t caps = 0;
-
     /*
      * If we are virtualised, there is nothing we can do.  Our EPT tables are
      * shadowed by our hypervisor, and not walked by hardware.
@@ -2671,10 +2815,8 @@ static bool __init has_if_pschange_mc(void)
     if ( cpu_has_hypervisor )
         return false;
 
-    if ( cpu_has_arch_caps )
-        rdmsrl(MSR_ARCH_CAPABILITIES, caps);
-
-    if ( caps & ARCH_CAPS_IF_PSCHANGE_MC_NO )
+    /* Hardware reports itself as fixed. */
+    if ( cpu_has_if_pschange_mc_no )
         return false;
 
     /*
@@ -2760,7 +2902,7 @@ const struct hvm_function_table * __init start_vmx(void)
 {
     set_in_cr4(X86_CR4_VMXE);
 
-    if ( vmx_vmcs_init() || alloc_vlapic_mapping() )
+    if ( vmx_vmcs_init() )
     {
         printk("VMX: failed to initialise.\n");
         return NULL;
@@ -2827,6 +2969,7 @@ const struct hvm_function_table * __init start_vmx(void)
         vmx_function_table.tsc_scaling.setup = vmx_setup_tsc_scaling;
     }
 
+    model_specific_lbr = get_model_specific_lbr();
     lbr_tsx_fixup_check();
     ler_to_fixup_check();
 
@@ -2973,141 +3116,6 @@ static int vmx_cr_access(cr_access_qual_t qual)
     return X86EMUL_OKAY;
 }
 
-static const struct lbr_info {
-    u32 base, count;
-} p4_lbr[] = {
-    { MSR_P4_LER_FROM_LIP,          1 },
-    { MSR_P4_LER_TO_LIP,            1 },
-    { MSR_P4_LASTBRANCH_TOS,        1 },
-    { MSR_P4_LASTBRANCH_0_FROM_LIP, NUM_MSR_P4_LASTBRANCH_FROM_TO },
-    { MSR_P4_LASTBRANCH_0_TO_LIP,   NUM_MSR_P4_LASTBRANCH_FROM_TO },
-    { 0, 0 }
-}, c2_lbr[] = {
-    { MSR_IA32_LASTINTFROMIP,       1 },
-    { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_C2_LASTBRANCH_TOS,        1 },
-    { MSR_C2_LASTBRANCH_0_FROM_IP,  NUM_MSR_C2_LASTBRANCH_FROM_TO },
-    { MSR_C2_LASTBRANCH_0_TO_IP,    NUM_MSR_C2_LASTBRANCH_FROM_TO },
-    { 0, 0 }
-}, nh_lbr[] = {
-    { MSR_IA32_LASTINTFROMIP,       1 },
-    { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_NHL_LBR_SELECT,           1 },
-    { MSR_NHL_LASTBRANCH_TOS,       1 },
-    { MSR_P4_LASTBRANCH_0_FROM_LIP, NUM_MSR_P4_LASTBRANCH_FROM_TO },
-    { MSR_P4_LASTBRANCH_0_TO_LIP,   NUM_MSR_P4_LASTBRANCH_FROM_TO },
-    { 0, 0 }
-}, sk_lbr[] = {
-    { MSR_IA32_LASTINTFROMIP,       1 },
-    { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_NHL_LBR_SELECT,           1 },
-    { MSR_NHL_LASTBRANCH_TOS,       1 },
-    { MSR_SKL_LASTBRANCH_0_FROM_IP, NUM_MSR_SKL_LASTBRANCH },
-    { MSR_SKL_LASTBRANCH_0_TO_IP,   NUM_MSR_SKL_LASTBRANCH },
-    { MSR_SKL_LASTBRANCH_0_INFO,    NUM_MSR_SKL_LASTBRANCH },
-    { 0, 0 }
-}, at_lbr[] = {
-    { MSR_IA32_LASTINTFROMIP,       1 },
-    { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_C2_LASTBRANCH_TOS,        1 },
-    { MSR_C2_LASTBRANCH_0_FROM_IP,  NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
-    { MSR_C2_LASTBRANCH_0_TO_IP,    NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
-    { 0, 0 }
-}, sm_lbr[] = {
-    { MSR_IA32_LASTINTFROMIP,       1 },
-    { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_SM_LBR_SELECT,            1 },
-    { MSR_SM_LASTBRANCH_TOS,        1 },
-    { MSR_C2_LASTBRANCH_0_FROM_IP,  NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
-    { MSR_C2_LASTBRANCH_0_TO_IP,    NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
-    { 0, 0 }
-}, gm_lbr[] = {
-    { MSR_IA32_LASTINTFROMIP,       1 },
-    { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_SM_LBR_SELECT,            1 },
-    { MSR_SM_LASTBRANCH_TOS,        1 },
-    { MSR_GM_LASTBRANCH_0_FROM_IP,  NUM_MSR_GM_LASTBRANCH_FROM_TO },
-    { MSR_GM_LASTBRANCH_0_TO_IP,    NUM_MSR_GM_LASTBRANCH_FROM_TO },
-    { 0, 0 }
-};
-
-static const struct lbr_info *last_branch_msr_get(void)
-{
-    switch ( boot_cpu_data.x86 )
-    {
-    case 6:
-        switch ( boot_cpu_data.x86_model )
-        {
-        /* Core2 Duo */
-        case 0x0f:
-        /* Enhanced Core */
-        case 0x17:
-        /* Xeon 7400 */
-        case 0x1d:
-            return c2_lbr;
-        /* Nehalem */
-        case 0x1a: case 0x1e: case 0x1f: case 0x2e:
-        /* Westmere */
-        case 0x25: case 0x2c: case 0x2f:
-        /* Sandy Bridge */
-        case 0x2a: case 0x2d:
-        /* Ivy Bridge */
-        case 0x3a: case 0x3e:
-        /* Haswell */
-        case 0x3c: case 0x3f: case 0x45: case 0x46:
-        /* Broadwell */
-        case 0x3d: case 0x47: case 0x4f: case 0x56:
-            return nh_lbr;
-        /* Skylake */
-        case 0x4e: case 0x5e:
-        /* Xeon Scalable */
-        case 0x55:
-        /* Cannon Lake */
-        case 0x66:
-        /* Goldmont Plus */
-        case 0x7a:
-        /* Ice Lake */
-        case 0x6a: case 0x6c: case 0x7d: case 0x7e:
-        /* Tiger Lake */
-        case 0x8c: case 0x8d:
-        /* Tremont */
-        case 0x86:
-        /* Kaby Lake */
-        case 0x8e: case 0x9e:
-        /* Comet Lake */
-        case 0xa5: case 0xa6:
-            return sk_lbr;
-        /* Atom */
-        case 0x1c: case 0x26: case 0x27: case 0x35: case 0x36:
-            return at_lbr;
-        /* Silvermont */
-        case 0x37: case 0x4a: case 0x4d: case 0x5a: case 0x5d:
-        /* Xeon Phi Knights Landing */
-        case 0x57:
-        /* Xeon Phi Knights Mill */
-        case 0x85:
-        /* Airmont */
-        case 0x4c:
-            return sm_lbr;
-        /* Goldmont */
-        case 0x5c: case 0x5f:
-            return gm_lbr;
-        }
-        break;
-
-    case 15:
-        switch ( boot_cpu_data.x86_model )
-        {
-        /* Pentium4/Xeon with em64t */
-        case 3: case 4: case 6:
-            return p4_lbr;
-        }
-        break;
-    }
-
-    return NULL;
-}
-
 enum
 {
     LBR_FORMAT_32                 = 0x0, /* 32-bit record format */
@@ -3214,7 +3222,7 @@ static void __init ler_to_fixup_check(void)
 
 static int is_last_branch_msr(u32 ecx)
 {
-    const struct lbr_info *lbr = last_branch_msr_get();
+    const struct lbr_info *lbr = model_specific_lbr;
 
     if ( lbr == NULL )
         return 0;
@@ -3331,36 +3339,55 @@ gp_fault:
     return X86EMUL_EXCEPTION;
 }
 
-static int __init alloc_vlapic_mapping(void)
+static int vmx_alloc_vlapic_mapping(struct domain *d)
 {
     struct page_info *pg;
     mfn_t mfn;
 
-    if ( !cpu_has_vmx_virtualize_apic_accesses )
+    if ( !has_vlapic(d) || !cpu_has_vmx_virtualize_apic_accesses )
         return 0;
 
-    pg = alloc_domheap_page(NULL, 0);
+    pg = alloc_domheap_page(d, MEMF_no_refcount);
     if ( !pg )
         return -ENOMEM;
 
-    /*
-     * Signal to shadow code that this page cannot be refcounted. This also
-     * makes epte_get_entry_emt() recognize this page as "special".
-     */
-    page_suppress_refcounting(pg);
+    if ( !get_page_and_type(pg, d, PGT_writable_page) )
+    {
+        /*
+         * The domain can't possibly know about this page yet, so failure
+         * here is a clear indication of something fishy going on.
+         */
+        domain_crash(d);
+        return -ENODATA;
+    }
 
     mfn = page_to_mfn(pg);
     clear_domain_page(mfn);
-    apic_access_mfn = mfn;
+    d->arch.hvm.vmx.apic_access_mfn = mfn;
 
     return 0;
 }
 
+static void vmx_free_vlapic_mapping(struct domain *d)
+{
+    mfn_t mfn = d->arch.hvm.vmx.apic_access_mfn;
+
+    d->arch.hvm.vmx.apic_access_mfn = _mfn(0);
+    if ( !mfn_eq(mfn, _mfn(0)) )
+    {
+        struct page_info *pg = mfn_to_page(mfn);
+
+        put_page_alloc_ref(pg);
+        put_page_and_type(pg);
+    }
+}
+
 static void vmx_install_vlapic_mapping(struct vcpu *v)
 {
+    mfn_t apic_access_mfn = v->domain->arch.hvm.vmx.apic_access_mfn;
     paddr_t virt_page_ma, apic_page_ma;
 
-    if ( mfn_eq(apic_access_mfn, INVALID_MFN) )
+    if ( mfn_eq(apic_access_mfn, _mfn(0)) )
         return;
 
     ASSERT(cpu_has_vmx_virtualize_apic_accesses);
@@ -3376,11 +3403,16 @@ static void vmx_install_vlapic_mapping(struct vcpu *v)
 
 void vmx_vlapic_msr_changed(struct vcpu *v)
 {
+    int virtualize_x2apic_mode;
     struct vlapic *vlapic = vcpu_vlapic(v);
     unsigned int msr;
 
-    if ( !has_assisted_xapic(v->domain) &&
-         !has_assisted_x2apic(v->domain) )
+    virtualize_x2apic_mode = ( (cpu_has_vmx_apic_reg_virt ||
+                                cpu_has_vmx_virtual_intr_delivery) &&
+                               cpu_has_vmx_virtualize_x2apic_mode );
+
+    if ( !cpu_has_vmx_virtualize_apic_accesses &&
+         !virtualize_x2apic_mode )
         return;
 
     vmx_vmcs_enter(v);
@@ -3390,7 +3422,7 @@ void vmx_vlapic_msr_changed(struct vcpu *v)
     if ( !vlapic_hw_disabled(vlapic) &&
          (vlapic_base_address(vlapic) == APIC_DEFAULT_PHYS_BASE) )
     {
-        if ( has_assisted_x2apic(v->domain) && vlapic_x2apic_mode(vlapic) )
+        if ( virtualize_x2apic_mode && vlapic_x2apic_mode(vlapic) )
         {
             v->arch.hvm.vmx.secondary_exec_control |=
                 SECONDARY_EXEC_VIRTUALIZE_X2APIC_MODE;
@@ -3411,7 +3443,7 @@ void vmx_vlapic_msr_changed(struct vcpu *v)
                 vmx_clear_msr_intercept(v, MSR_X2APIC_SELF, VMX_MSR_W);
             }
         }
-        else if ( has_assisted_xapic(v->domain) )
+        else
             v->arch.hvm.vmx.secondary_exec_control |=
                 SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES;
     }
@@ -3429,7 +3461,7 @@ static int cf_check vmx_msr_write_intercept(
     unsigned int msr, uint64_t msr_content)
 {
     struct vcpu *v = current;
-    const struct cpuid_policy *cp = v->domain->arch.cpuid;
+    const struct cpu_policy *cp = v->domain->arch.cpu_policy;
 
     HVM_DBG_LOG(DBG_LEVEL_MSR, "ecx=%#x, msr_value=%#"PRIx64, msr, msr_content);
 
@@ -3510,17 +3542,25 @@ static int cf_check vmx_msr_write_intercept(
             goto gp_fault;
 
         /*
+         * The Arch LBR spec (new in Ice Lake) states that CPUs with no
+         * model-specific LBRs implement MSR_DBG_CTL.LBR by discarding writes
+         * and always returning 0.
+         *
+         * Use this property in all cases where we don't know any
+         * model-specific LBR information, as it matches real hardware
+         * behaviour on post-Ice Lake systems.
+         */
+        if ( !model_specific_lbr )
+            msr_content &= ~IA32_DEBUGCTLMSR_LBR;
+
+        /*
          * When a guest first enables LBR, arrange to save and restore the LBR
          * MSRs and allow the guest direct access.
          *
-         * MSR_DEBUGCTL and LBR has existed almost as long as MSRs have
-         * existed, and there is no architectural way to hide the feature, or
-         * fail the attempt to enable LBR.
-         *
-         * Unknown host LBR MSRs or hitting -ENOSPC with the guest load/save
-         * list are definitely hypervisor bugs, whereas -ENOMEM for allocating
-         * the load/save list is simply unlucky (and shouldn't occur with
-         * sensible management by the toolstack).
+         * Hitting -ENOSPC with the guest load/save list is definitely a
+         * hypervisor bug, whereas -ENOMEM for allocating the load/save list
+         * is simply unlucky (and shouldn't occur with sensible management by
+         * the toolstack).
          *
          * Either way, there is nothing we can do right now to recover, and
          * the guest won't execute correctly either.  Simply crash the domain
@@ -3529,14 +3569,7 @@ static int cf_check vmx_msr_write_intercept(
         if ( !(v->arch.hvm.vmx.lbr_flags & LBR_MSRS_INSERTED) &&
              (msr_content & IA32_DEBUGCTLMSR_LBR) )
         {
-            const struct lbr_info *lbr = last_branch_msr_get();
-
-            if ( unlikely(!lbr) )
-            {
-                gprintk(XENLOG_ERR, "Unknown Host LBR MSRs\n");
-                domain_crash(v->domain);
-                return X86EMUL_OKAY;
-            }
+            const struct lbr_info *lbr = model_specific_lbr;
 
             for ( ; lbr->count; lbr++ )
             {
@@ -3930,6 +3963,15 @@ static int vmx_handle_apic_write(void)
     return vlapic_apicv_write(current, exit_qualification & 0xfff);
 }
 
+static void undo_nmis_unblocked_by_iret(void)
+{
+    unsigned long guest_info;
+
+    __vmread(GUEST_INTERRUPTIBILITY_INFO, &guest_info);
+    __vmwrite(GUEST_INTERRUPTIBILITY_INFO,
+              guest_info | VMX_INTR_SHADOW_NMI);
+}
+
 void vmx_vmexit_handler(struct cpu_user_regs *regs)
 {
     unsigned long exit_qualification, exit_reason, idtv_info, intr_info = 0;
@@ -3992,6 +4034,10 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
     case EXIT_REASON_MCE_DURING_VMENTRY:
         do_machine_check(regs);
         break;
+
+    case EXIT_REASON_INIT:
+        printk(XENLOG_ERR "Error: INIT received - ignoring\n");
+        return; /* Renter the guest without further processing */
     }
 
     /* Now enable interrupts so it's safe to take locks. */
@@ -4026,13 +4072,7 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
             }
         }
 
-        if ( idx != vcpu_altp2m(v).p2midx )
-        {
-            BUG_ON(idx >= MAX_ALTP2M);
-            atomic_dec(&p2m_get_altp2m(v)->active_vcpus);
-            vcpu_altp2m(v).p2midx = idx;
-            atomic_inc(&p2m_get_altp2m(v)->active_vcpus);
-        }
+        p2m_set_altp2m(v, idx);
     }
 
     if ( unlikely(currd->arch.monitor.vmexit_enabled) )
@@ -4045,6 +4085,12 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
             goto exit_and_crash;
         if ( rc )
             return;
+    }
+
+    if ( unlikely(exit_reason & VMX_EXIT_REASONS_BUS_LOCK) )
+    {
+        perfc_incr(buslock);
+        exit_reason &= ~VMX_EXIT_REASONS_BUS_LOCK;
     }
 
     /* XXX: This looks ugly, but we need a mechanism to ensure
@@ -4124,13 +4170,7 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
         if ( unlikely(intr_info & INTR_INFO_NMI_UNBLOCKED_BY_IRET) &&
              !(idtv_info & INTR_INFO_VALID_MASK) &&
              (vector != TRAP_double_fault) )
-        {
-            unsigned long guest_info;
-
-            __vmread(GUEST_INTERRUPTIBILITY_INFO, &guest_info);
-            __vmwrite(GUEST_INTERRUPTIBILITY_INFO,
-                      guest_info | VMX_INTR_SHADOW_NMI);
-        }
+            undo_nmis_unblocked_by_iret();
 
         perfc_incra(cause_vector, vector);
 
@@ -4496,6 +4536,11 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
 
         __vmread(GUEST_PHYSICAL_ADDRESS, &gpa);
         __vmread(EXIT_QUALIFICATION, &exit_qualification);
+
+        if ( unlikely(exit_qualification & INTR_INFO_NMI_UNBLOCKED_BY_IRET) &&
+             !(idtv_info & INTR_INFO_VALID_MASK) )
+            undo_nmis_unblocked_by_iret();
+
         ept_handle_violation(exit_qualification, gpa);
         break;
     }
@@ -4540,6 +4585,12 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
         break;
 
     case EXIT_REASON_PML_FULL:
+        __vmread(EXIT_QUALIFICATION, &exit_qualification);
+
+        if ( unlikely(exit_qualification & INTR_INFO_NMI_UNBLOCKED_BY_IRET) &&
+             !(idtv_info & INTR_INFO_VALID_MASK) )
+            undo_nmis_unblocked_by_iret();
+
         vmx_vcpu_flush_pml_buffer(v);
         break;
 
@@ -4554,6 +4605,31 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
     case EXIT_REASON_ACCESS_GDTR_OR_IDTR:
     case EXIT_REASON_ACCESS_LDTR_OR_TR:
         vmx_handle_descriptor_access(exit_reason);
+        break;
+
+    case EXIT_REASON_BUS_LOCK:
+        /*
+         * Nothing to do: just taking a vmexit should be enough of a pause to
+         * prevent a VM from crippling the host with bus locks.  Note
+         * EXIT_REASON_BUS_LOCK will always have bit 26 set in exit_reason, and
+         * hence the perf counter is already increased.
+         */
+        break;
+
+    case EXIT_REASON_NOTIFY:
+        __vmread(EXIT_QUALIFICATION, &exit_qualification);
+
+        if ( unlikely(exit_qualification & NOTIFY_VM_CONTEXT_INVALID) )
+        {
+            perfc_incr(vmnotify_crash);
+            gprintk(XENLOG_ERR, "invalid VM context after notify vmexit\n");
+            domain_crash(v->domain);
+            break;
+        }
+
+        if ( unlikely(exit_qualification & INTR_INFO_NMI_UNBLOCKED_BY_IRET) )
+            undo_nmis_unblocked_by_iret();
+
         break;
 
     case EXIT_REASON_VMX_PREEMPTION_TIMER_EXPIRED:

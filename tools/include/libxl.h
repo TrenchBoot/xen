@@ -536,20 +536,6 @@
 #define LIBXL_HAVE_NIC_TRUSTED 1
 
 /*
- * LIBXL_HAVE_PHYSINFO_ASSISTED_APIC indicates that libxl_physinfo has
- * cap_assisted_xapic and cap_assisted_x2apic fields, which indicates
- * the availability of x{2}APIC hardware assisted virtualization.
- */
-#define LIBXL_HAVE_PHYSINFO_ASSISTED_APIC 1
-
-/*
- * LIBXL_HAVE_ASSISTED_APIC indicates that libxl_domain_build_info has
- * assisted_xapic and assisted_x2apic fields for enabling hardware
- * assisted virtualization for x{2}apic per domain.
- */
-#define LIBXL_HAVE_ASSISTED_APIC 1
-
-/*
  * LIBXL_HAVE_DEVICE_DISK_SPECIFICATION indicates that 'specification' and
  * 'transport' fields (of libxl_disk_specification and libxl_disk_transport
  * types respectively) are present in libxl_device_disk.
@@ -1448,12 +1434,8 @@ typedef struct {
 void libxl_bitmap_init(libxl_bitmap *map);
 void libxl_bitmap_dispose(libxl_bitmap *map);
 
-/*
- * libxl_cpuid_policy is opaque in the libxl ABI.  Users of both libxl and
- * libxc may not make assumptions about xc_xend_cpuid.
- */
-typedef struct xc_xend_cpuid libxl_cpuid_policy;
-typedef libxl_cpuid_policy * libxl_cpuid_policy_list;
+struct libxl__cpu_policy;
+typedef struct libxl__cpu_policy *libxl_cpuid_policy_list;
 void libxl_cpuid_dispose(libxl_cpuid_policy_list *cpuid_list);
 int libxl_cpuid_policy_list_length(const libxl_cpuid_policy_list *l);
 void libxl_cpuid_policy_list_copy(libxl_ctx *ctx,

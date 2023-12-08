@@ -23,7 +23,7 @@
 #ifndef __X86_EMULATE_H__
 #define __X86_EMULATE_H__
 
-#include <xen/lib/x86/cpuid.h>
+#include <xen/lib/x86/cpu-policy.h>
 
 #define MAX_INST_LEN 15
 
@@ -565,8 +565,11 @@ struct x86_emulate_ctxt
      * Input-only state:
      */
 
-    /* CPUID Policy for the domain. */
-    const struct cpuid_policy *cpuid;
+    /* CPU policy for the domain.  Allow aliases for local code clarity. */
+    union {
+        struct cpu_policy *cpu_policy;
+        struct cpu_policy *cpuid;
+    };
 
     /* Set this if writes may have side effects. */
     bool force_writeback;

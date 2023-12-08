@@ -1,8 +1,10 @@
+#include <xen/cpu.h>
 #include <xen/init.h>
 #include <xen/bitops.h>
 #include <xen/mm.h>
 #include <xen/param.h>
 #include <xen/smp.h>
+#include <xen/softirq.h>
 #include <xen/pci.h>
 #include <xen/warning.h>
 #include <asm/io.h>
@@ -13,6 +15,7 @@
 #include <asm/spec_ctrl.h>
 #include <asm/acpi.h>
 #include <asm/apic.h>
+#include <asm/microcode.h>
 
 #include "cpu.h"
 
@@ -49,6 +52,9 @@ boolean_param("allow_unsafe", opt_allow_unsafe);
 /* Signal whether the ACPI C1E quirk is required. */
 bool __read_mostly amd_acpi_c1e_quirk;
 bool __ro_after_init amd_legacy_ssbd;
+bool __initdata amd_virt_spec_ctrl;
+
+static bool __read_mostly zen2_c6_disabled;
 
 static inline int rdmsr_amd_safe(unsigned int msr, unsigned int *lo,
 				 unsigned int *hi)
@@ -742,7 +748,7 @@ void amd_init_ssbd(const struct cpuinfo_x86 *c)
 }
 
 static struct ssbd_ls_cfg {
-    bool locked;
+    spinlock_t lock;
     unsigned int count;
 } __cacheline_aligned *ssbd_ls_cfg;
 static unsigned int __ro_after_init ssbd_max_cores;
@@ -753,7 +759,7 @@ bool __init amd_setup_legacy_ssbd(void)
 	unsigned int i;
 
 	if ((boot_cpu_data.x86 != 0x17 && boot_cpu_data.x86 != 0x18) ||
-	    boot_cpu_data.x86_num_siblings <= 1)
+	    boot_cpu_data.x86_num_siblings <= 1 || opt_ssbd)
 		return true;
 
 	/*
@@ -776,53 +782,74 @@ bool __init amd_setup_legacy_ssbd(void)
 	if (!ssbd_ls_cfg)
 		return false;
 
-	if (opt_ssbd)
-		for (i = 0; i < ssbd_max_cores * AMD_FAM17H_MAX_SOCKETS; i++)
-			/* Set initial state, applies to any (hotplug) CPU. */
-			ssbd_ls_cfg[i].count = boot_cpu_data.x86_num_siblings;
+	for (i = 0; i < ssbd_max_cores * AMD_FAM17H_MAX_SOCKETS; i++)
+		spin_lock_init(&ssbd_ls_cfg[i].lock);
 
 	return true;
 }
 
 /*
- * Executed from GIF==0 context: avoid using BUG/ASSERT or other functionality
- * that relies on exceptions as those are not expected to run in GIF==0
- * context.
+ * legacy_ssbd is always initialized to false because when SSBD is set
+ * from the command line guest attempts to change it are a no-op (see
+ * amd_set_legacy_ssbd()), whereas when SSBD is inactive hardware will
+ * be forced into that mode (see amd_init_ssbd()).
  */
-void amd_set_legacy_ssbd(bool enable)
+static DEFINE_PER_CPU(bool, legacy_ssbd);
+
+/* Must be called only when the SSBD setting needs toggling. */
+static void core_set_legacy_ssbd(bool enable)
 {
 	const struct cpuinfo_x86 *c = &current_cpu_data;
 	struct ssbd_ls_cfg *status;
+	unsigned long flags;
+
+	BUG_ON(this_cpu(legacy_ssbd) == enable);
 
 	if ((c->x86 != 0x17 && c->x86 != 0x18) || c->x86_num_siblings <= 1) {
-		set_legacy_ssbd(c, enable);
+		BUG_ON(!set_legacy_ssbd(c, enable));
 		return;
 	}
 
+	BUG_ON(c->phys_proc_id >= AMD_FAM17H_MAX_SOCKETS);
+	BUG_ON(c->cpu_core_id >= ssbd_max_cores);
 	status = &ssbd_ls_cfg[c->phys_proc_id * ssbd_max_cores +
 	                      c->cpu_core_id];
 
-	/*
-	 * Open code a very simple spinlock: this function is used with GIF==0
-	 * and different IF values, so would trigger the checklock detector.
-	 * Instead of trying to workaround the detector, use a very simple lock
-	 * implementation: it's better to reduce the amount of code executed
-	 * with GIF==0.
-	 */
-	while (test_and_set_bool(status->locked))
-		cpu_relax();
+	spin_lock_irqsave(&status->lock, flags);
 	status->count += enable ? 1 : -1;
+	ASSERT(status->count <= c->x86_num_siblings);
 	if (enable ? status->count == 1 : !status->count)
-		set_legacy_ssbd(c, enable);
-	barrier();
-	write_atomic(&status->locked, false);
+		BUG_ON(!set_legacy_ssbd(c, enable));
+	spin_unlock_irqrestore(&status->lock, flags);
+}
+
+void amd_set_legacy_ssbd(bool enable)
+{
+	if (opt_ssbd)
+		/*
+		 * Ignore attempts to turn off SSBD, it's hardcoded on the
+		 * command line.
+		 */
+		return;
+
+	if (this_cpu(legacy_ssbd) == enable)
+		return;
+
+	if (cpu_has_virt_ssbd)
+		wrmsr(MSR_VIRT_SPEC_CTRL, enable ? SPEC_CTRL_SSBD : 0, 0);
+	else if (amd_legacy_ssbd)
+		core_set_legacy_ssbd(enable);
+	else
+		ASSERT_UNREACHABLE();
+
+	this_cpu(legacy_ssbd) = enable;
 }
 
 /*
  * On Zen2 we offer this chicken (bit) on the altar of Speculation.
  *
  * Refer to the AMD Branch Type Confusion whitepaper:
- * https://XXX
+ * https://www.amd.com/system/files/documents/technical-guidance-for-mitigating-branch-type-confusion.pdf
  *
  * Setting this unnamed bit supposedly causes prediction information on
  * non-branch instructions to be ignored.  It is to be set unilaterally in
@@ -854,6 +881,98 @@ void __init detect_zen2_null_seg_behaviour(void)
 	if (base == 0)
 		setup_force_cpu_cap(X86_FEATURE_NSCB);
 
+}
+
+void amd_check_zenbleed(void)
+{
+	const struct cpu_signature *sig = &this_cpu(cpu_sig);
+	unsigned int good_rev;
+	uint64_t val, old_val, chickenbit = (1 << 9);
+
+	/*
+	 * If we're virtualised, we can't do family/model checks safely, and
+	 * we likely wouldn't have access to DE_CFG even if we could see a
+	 * microcode revision.
+	 *
+	 * A hypervisor may hide AVX as a stopgap mitigation.  We're not in a
+	 * position to care either way.  An admin doesn't want to be disabling
+	 * AVX as a mitigation on any build of Xen with this logic present.
+	 */
+	if (cpu_has_hypervisor || boot_cpu_data.x86 != 0x17)
+		return;
+
+	switch (boot_cpu_data.x86_model) {
+	case 0x30 ... 0x3f: good_rev = 0x0830107a; break;
+	case 0x60 ... 0x67: good_rev = 0x0860010b; break;
+	case 0x68 ... 0x6f: good_rev = 0x08608105; break;
+	case 0x70 ... 0x7f: good_rev = 0x08701032; break;
+	case 0xa0 ... 0xaf: good_rev = 0x08a00008; break;
+	default:
+		/*
+		 * With the Fam17h check above, parts getting here are Zen1.
+		 * They're not affected.
+		 */
+		return;
+	}
+
+	rdmsrl(MSR_AMD64_DE_CFG, val);
+	old_val = val;
+
+	/*
+	 * Microcode is the preferred mitigation, in terms of performance.
+	 * However, without microcode, this chickenbit (specific to the Zen2
+	 * uarch) disables Floating Point Mov-Elimination to mitigate the
+	 * issue.
+	 */
+	val &= ~chickenbit;
+	if (sig->rev < good_rev)
+		val |= chickenbit;
+
+	if (val == old_val)
+		/* Nothing to change. */
+		return;
+
+	/*
+	 * DE_CFG is a Core-scoped MSR, and this write is racy during late
+	 * microcode load.  However, both threads calculate the new value from
+	 * state which is shared, and unrelated to the old value, so the
+	 * result should be consistent.
+	 */
+	wrmsrl(MSR_AMD64_DE_CFG, val);
+
+	/*
+	 * Inform the admin that we changed something, but don't spam,
+	 * especially during a late microcode load.
+	 */
+	if (smp_processor_id() == 0)
+		printk(XENLOG_INFO "Zenbleed mitigation - using %s\n",
+		       val & chickenbit ? "chickenbit" : "microcode");
+}
+
+static void cf_check zen2_disable_c6(void *arg)
+{
+	/* Disable C6 by clearing the CCR{0,1,2}_CC6EN bits. */
+	const uint64_t mask = ~((1ul << 6) | (1ul << 14) | (1ul << 22));
+	uint64_t val;
+
+	if (!zen2_c6_disabled) {
+		printk(XENLOG_WARNING
+    "Disabling C6 after 1000 days apparent uptime due to AMD errata 1474\n");
+		zen2_c6_disabled = true;
+		/*
+		 * Prevent CPU hotplug so that started CPUs will either see
+		 * zen2_c6_disabled set, or will be handled by
+		 * smp_call_function().
+		 */
+		while (!get_cpu_maps())
+			process_pending_softirqs();
+		smp_call_function(zen2_disable_c6, NULL, 0);
+		put_cpu_maps();
+	}
+
+	/* Update the MSR to disable C6, done on all threads. */
+	rdmsrl(MSR_AMD_CSTATE_CFG, val);
+	wrmsrl(MSR_AMD_CSTATE_CFG, val & mask);
 }
 
 static void cf_check init_amd(struct cpuinfo_x86 *c)
@@ -1128,6 +1247,11 @@ static void cf_check init_amd(struct cpuinfo_x86 *c)
 	if ((smp_processor_id() == 1) && !cpu_has(c, X86_FEATURE_ITSC))
 		disable_c1_ramping();
 
+	amd_check_zenbleed();
+
+	if (zen2_c6_disabled)
+		zen2_disable_c6(NULL);
+
 	check_syscfg_dram_mod_en();
 
 	amd_log_freq(c);
@@ -1137,3 +1261,44 @@ const struct cpu_dev amd_cpu_dev = {
 	.c_early_init	= early_init_amd,
 	.c_init		= init_amd,
 };
+
+static int __init cf_check zen2_c6_errata_check(void)
+{
+	/*
+	 * Errata #1474: A Core May Hang After About 1044 Days
+	 * Set up a timer to disable C6 after 1000 days uptime.
+	 */
+	s_time_t delta;
+
+	/*
+	 * Zen1 vs Zen2 isn't a simple model number comparison, so use STIBP as
+	 * a heuristic to separate the two uarches in Fam17h.
+	 */
+	if (cpu_has_hypervisor || boot_cpu_data.x86 != 0x17 ||
+	    !boot_cpu_has(X86_FEATURE_AMD_STIBP))
+		return 0;
+
+	/*
+	 * Deduct current TSC value, this would be relevant if kexec'ed for
+	 * example.  Might not be accurate, but worst case we end up disabling
+	 * C6 before strictly required, which would still be safe.
+	 *
+	 * NB: all affected models (Zen2) have invariant TSC and TSC adjust
+	 * MSR, so early_time_init() will have already cleared any TSC offset.
+	 */
+	delta = DAYS(1000) - tsc_ticks2ns(rdtsc());
+	if (delta > 0) {
+		static struct timer errata_c6;
+
+		init_timer(&errata_c6, zen2_disable_c6, NULL, 0);
+		set_timer(&errata_c6, NOW() + delta);
+	} else
+		zen2_disable_c6(NULL);
+
+	return 0;
+}
+/*
+ * Must be executed after early_time_init() for tsc_ticks2ns() to have been
+ * calibrated.  That prevents us doing the check in init_amd().
+ */
+presmp_initcall(zen2_c6_errata_check);

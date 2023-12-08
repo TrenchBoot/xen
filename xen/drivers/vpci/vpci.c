@@ -19,6 +19,7 @@
 
 #include <xen/sched.h>
 #include <xen/vpci.h>
+#include <xen/vmap.h>
 
 /* Internal struct to store the emulated PCI registers. */
 struct vpci_register {
@@ -37,7 +38,7 @@ extern vpci_register_init_t *const __end_vpci_array[];
 
 void vpci_remove_device(struct pci_dev *pdev)
 {
-    if ( !has_vpci(pdev->domain) )
+    if ( !has_vpci(pdev->domain) || !pdev->vpci )
         return;
 
     spin_lock(&pdev->vpci->lock);
@@ -51,8 +52,15 @@ void vpci_remove_device(struct pci_dev *pdev)
         xfree(r);
     }
     spin_unlock(&pdev->vpci->lock);
-    if ( pdev->vpci->msix && pdev->vpci->msix->pba )
-        iounmap(pdev->vpci->msix->pba);
+    if ( pdev->vpci->msix )
+    {
+        unsigned int i;
+
+        list_del(&pdev->vpci->msix->next);
+        for ( i = 0; i < ARRAY_SIZE(pdev->vpci->msix->table); i++ )
+            if ( pdev->vpci->msix->table[i] )
+                iounmap(pdev->vpci->msix->table[i]);
+    }
     xfree(pdev->vpci->msix);
     xfree(pdev->vpci->msi);
     xfree(pdev->vpci);
@@ -326,7 +334,7 @@ uint32_t vpci_read(pci_sbdf_t sbdf, unsigned int reg, unsigned int size)
 
     /* Find the PCI dev matching the address. */
     pdev = pci_get_pdev(d, sbdf);
-    if ( !pdev )
+    if ( !pdev || !pdev->vpci )
         return vpci_read_hw(sbdf, reg, size);
 
     spin_lock(&pdev->vpci->lock);
@@ -436,7 +444,7 @@ void vpci_write(pci_sbdf_t sbdf, unsigned int reg, unsigned int size,
      * Passthrough everything that's not trapped.
      */
     pdev = pci_get_pdev(d, sbdf);
-    if ( !pdev )
+    if ( !pdev || !pdev->vpci )
     {
         vpci_write_hw(sbdf, reg, size, data);
         return;

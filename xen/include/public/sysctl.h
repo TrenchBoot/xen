@@ -1,25 +1,8 @@
+/* SPDX-License-Identifier: MIT */
 /******************************************************************************
  * sysctl.h
  *
  * System management operations. For use by node control stack.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to
- * deal in the Software without restriction, including without limitation the
- * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- * sell copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
  *
  * Copyright (c) 2002-2006, K Fraser
  */
@@ -110,13 +93,6 @@ struct xen_sysctl_tbuf_op {
 
 /* Max XEN_SYSCTL_PHYSCAP_* constant.  Used for ABI checking. */
 #define XEN_SYSCTL_PHYSCAP_MAX XEN_SYSCTL_PHYSCAP_gnttab_v2
-
-/* The platform supports x{2}apic hardware assisted emulation. */
-#define XEN_SYSCTL_PHYSCAP_X86_ASSISTED_XAPIC  (1u << 0)
-#define XEN_SYSCTL_PHYSCAP_X86_ASSISTED_X2APIC (1u << 1)
-
-/* Max XEN_SYSCTL_PHYSCAP_X86_* constant. Used for ABI checking. */
-#define XEN_SYSCTL_PHYSCAP_X86_MAX XEN_SYSCTL_PHYSCAP_X86_ASSISTED_X2APIC
 
 struct xen_sysctl_physinfo {
     uint32_t threads_per_core;
@@ -820,6 +796,8 @@ struct xen_sysctl_cpu_featureset {
 #define XEN_SYSCTL_cpu_featureset_host     1
 #define XEN_SYSCTL_cpu_featureset_pv       2
 #define XEN_SYSCTL_cpu_featureset_hvm      3
+#define XEN_SYSCTL_cpu_featureset_pv_max   4
+#define XEN_SYSCTL_cpu_featureset_hvm_max  5
     uint32_t index;       /* IN: Which featureset to query? */
     uint32_t nr_features; /* IN/OUT: Number of entries in/written to
                            * 'features', or the maximum number of features if
@@ -1065,15 +1043,13 @@ struct xen_sysctl_cpu_policy {
 #define XEN_SYSCTL_cpu_policy_pv_default   4
 #define XEN_SYSCTL_cpu_policy_hvm_default  5
     uint32_t index;       /* IN: Which policy to query? */
-    uint32_t nr_leaves;   /* IN/OUT: Number of leaves in/written to
-                           * 'cpuid_policy', or the maximum number of leaves
-                           * if the guest handle is NULL. */
-    uint32_t nr_msrs;     /* IN/OUT: Number of MSRs in/written to
-                           * 'msr_policy', or the maximum number of MSRs if
-                           * the guest handle is NULL. */
+    uint32_t nr_leaves;   /* IN/OUT: Number of leaves in/written to 'leaves',
+                           * or the max number if 'leaves' is NULL. */
+    uint32_t nr_msrs;     /* IN/OUT: Number of MSRs in/written to 'msrs', or
+                           * the max number of if 'msrs' is NULL. */
     uint32_t _rsvd;       /* Must be zero. */
-    XEN_GUEST_HANDLE_64(xen_cpuid_leaf_t) cpuid_policy; /* OUT */
-    XEN_GUEST_HANDLE_64(xen_msr_entry_t) msr_policy;    /* OUT */
+    XEN_GUEST_HANDLE_64(xen_cpuid_leaf_t) leaves; /* OUT */
+    XEN_GUEST_HANDLE_64(xen_msr_entry_t)  msrs;   /* OUT */
 };
 typedef struct xen_sysctl_cpu_policy xen_sysctl_cpu_policy_t;
 DEFINE_XEN_GUEST_HANDLE(xen_sysctl_cpu_policy_t);

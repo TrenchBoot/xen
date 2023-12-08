@@ -9,13 +9,13 @@ for the definitions of the support status levels etc.
 
 # Release Support
 
-    Xen-Version: unstable
-    Initial-Release: n/a
-    Supported-Until: TBD
-    Security-Support-Until: Unreleased - not yet security-supported
+    Xen-Version: 4.17
+    Initial-Release: 2022-12-12
+    Supported-Until: 2024-06-12
+    Security-Support-Until: 2025-12-12
 
 Release Notes
-: <a href="https://wiki.xenproject.org/wiki/Xen_Project_X.YY_Release_Notes">RN</a>
+: <a href="https://wiki.xenproject.org/wiki/Xen_Project_4.17_Release_Notes">RN</a>
 
 # Feature Support
 
@@ -39,8 +39,10 @@ supported in this document.
 
     Status: Supported
     Status, Cortex A57 r0p0-r1p1: Supported, not security supported
+    Status, Cortex A77 r0p0-r1p0: Supported, not security supported
 
 For the Cortex A57 r0p0 - r1p1, see Errata 832075.
+For the Cortex A77 r0p0 - r1p0, see Errata 1508412.
 
 ## Host hardware support
 
@@ -193,13 +195,18 @@ Support for running qemu-xen device model in a linux stubdomain.
 
     Status: Tech Preview
 
-## Liveupdate of C xenstored daemon
+## Xenstore
 
-    Status: Tech Preview
+### C xenstored daemon
 
-## Liveupdate of OCaml xenstored daemon
+    Status: Supported
+    Status, Liveupdate: Tech Preview
 
-    Status: Tech Preview
+### OCaml xenstored daemon
+
+    Status: Supported
+    Status, untrusted driver domains: Supported, not security supported
+    Status, Liveupdate: Not functional
 
 ## Toolstack/3rd party
 
@@ -293,11 +300,25 @@ pre-defined by configuration using physical address ranges.
 
     Status, ARM: Tech Preview
 
+### Static Heap
+
+Allow reserving parts of RAM through the device tree using physical
+address ranges as heap.
+
+    Status, ARM: Tech Preview
+
 ### Memory Sharing
 
 Allow sharing of identical pages between guests
 
     Status, x86 HVM: Experimental
+
+### Static Memory Sharing
+
+Allow to statically set up shared memory on dom0less system,
+enabling domains to do shm-based communication
+
+    Status, ARM: Tech Preview
 
 ### Memory Paging
 
@@ -907,6 +928,13 @@ Memory of dom0less DomUs is not scrubbed at boot when bootscrub=on or
 bootscrub=off are passed as Xen command line parameters. (Memory should
 be scrubbed with bootscrub=idle.) No XSAs will be issues due to
 unscrubbed memory.
+
+## Static Event Channel
+
+Allow to setup the static event channel on dom0less system, enabling domains
+to send/receive notifications.
+
+    Status, ARM: Tech Preview
 
 # Format and definitions
 

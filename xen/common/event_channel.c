@@ -193,6 +193,15 @@ static struct evtchn *alloc_evtchn_bucket(struct domain *d, unsigned int port)
     return NULL;
 }
 
+/*
+ * Allocate a given port and ensure all the buckets up to that ports
+ * have been allocated.
+ *
+ * The last part is important because the rest of the event channel code
+ * relies on all the buckets up to d->valid_evtchns to be valid. However,
+ * event channels may be sparsed when allocating the static evtchn port
+ * numbers that are scattered in nature.
+ */
 int evtchn_allocate_port(struct domain *d, evtchn_port_t port)
 {
     if ( port > d->max_evtchn_port || port >= max_evtchns(d) )
@@ -207,30 +216,36 @@ int evtchn_allocate_port(struct domain *d, evtchn_port_t port)
     }
     else
     {
-        struct evtchn *chn;
-        struct evtchn **grp;
+        unsigned int alloc_port = read_atomic(&d->valid_evtchns);
 
-        if ( !group_from_port(d, port) )
+        do
         {
-            grp = xzalloc_array(struct evtchn *, BUCKETS_PER_GROUP);
-            if ( !grp )
+            struct evtchn *chn;
+            struct evtchn **grp;
+
+            if ( !group_from_port(d, alloc_port) )
+            {
+                grp = xzalloc_array(struct evtchn *, BUCKETS_PER_GROUP);
+                if ( !grp )
+                    return -ENOMEM;
+                group_from_port(d, alloc_port) = grp;
+            }
+
+            chn = alloc_evtchn_bucket(d, alloc_port);
+            if ( !chn )
                 return -ENOMEM;
-            group_from_port(d, port) = grp;
-        }
+            bucket_from_port(d, alloc_port) = chn;
 
-        chn = alloc_evtchn_bucket(d, port);
-        if ( !chn )
-            return -ENOMEM;
-        bucket_from_port(d, port) = chn;
-
-        /*
-         * d->valid_evtchns is used to check whether the bucket can be
-         * accessed without the per-domain lock. Therefore,
-         * d->valid_evtchns should be seen *after* the new bucket has
-         * been setup.
-         */
-        smp_wmb();
-        write_atomic(&d->valid_evtchns, d->valid_evtchns + EVTCHNS_PER_BUCKET);
+            /*
+             * d->valid_evtchns is used to check whether the bucket can be
+             * accessed without the per-domain lock. Therefore,
+             * d->valid_evtchns should be seen *after* the new bucket has
+             * been setup.
+             */
+            smp_wmb();
+            alloc_port += EVTCHNS_PER_BUCKET;
+            write_atomic(&d->valid_evtchns, alloc_port);
+        } while ( port >= alloc_port );
     }
 
     write_atomic(&d->active_evtchns, d->active_evtchns + 1);
@@ -290,11 +305,27 @@ void evtchn_free(struct domain *d, struct evtchn *chn)
     xsm_evtchn_close_post(chn);
 }
 
-int evtchn_alloc_unbound(evtchn_alloc_unbound_t *alloc)
+static int evtchn_get_port(struct domain *d, evtchn_port_t port)
+{
+    int rc;
+
+    if ( port != 0 )
+        rc = evtchn_allocate_port(d, port);
+    else
+        rc = get_free_port(d);
+
+    return rc ?: port;
+}
+
+/*
+ * If port is zero get the next free port and allocate. If port is non-zero
+ * allocate the specified port.
+ */
+int evtchn_alloc_unbound(evtchn_alloc_unbound_t *alloc, evtchn_port_t port)
 {
     struct evtchn *chn;
     struct domain *d;
-    int            port, rc;
+    int            rc;
     domid_t        dom = alloc->dom;
 
     d = rcu_lock_domain_by_any_id(dom);
@@ -303,8 +334,11 @@ int evtchn_alloc_unbound(evtchn_alloc_unbound_t *alloc)
 
     write_lock(&d->event_lock);
 
-    if ( (port = get_free_port(d)) < 0 )
-        ERROR_EXIT_DOM(port, d);
+    port = rc = evtchn_get_port(d, port);
+    if ( rc < 0 )
+        ERROR_EXIT(rc);
+    rc = 0;
+
     chn = evtchn_from_port(d, port);
 
     rc = xsm_evtchn_unbound(XSM_TARGET, d, chn, alloc->remote_dom);
@@ -347,11 +381,16 @@ static void double_evtchn_unlock(struct evtchn *lchn, struct evtchn *rchn)
     evtchn_write_unlock(rchn);
 }
 
-static int evtchn_bind_interdomain(evtchn_bind_interdomain_t *bind)
+/*
+ * If lport is zero get the next free port and allocate. If port is non-zero
+ * allocate the specified lport.
+ */
+int evtchn_bind_interdomain(evtchn_bind_interdomain_t *bind, struct domain *ld,
+                            evtchn_port_t lport)
 {
     struct evtchn *lchn, *rchn;
-    struct domain *ld = current->domain, *rd;
-    int            lport, rc;
+    struct domain *rd;
+    int            rc;
     evtchn_port_t  rport = bind->remote_port;
     domid_t        rdom = bind->remote_dom;
 
@@ -371,8 +410,11 @@ static int evtchn_bind_interdomain(evtchn_bind_interdomain_t *bind)
         write_lock(&ld->event_lock);
     }
 
-    if ( (lport = get_free_port(ld)) < 0 )
-        ERROR_EXIT(lport);
+    lport = rc = evtchn_get_port(ld, lport);
+    if ( rc < 0 )
+        ERROR_EXIT(rc);
+    rc = 0;
+
     lchn = evtchn_from_port(ld, lport);
 
     rchn = _evtchn_from_port(rd, rport);
@@ -447,19 +489,10 @@ int evtchn_bind_virq(evtchn_bind_virq_t *bind, evtchn_port_t port)
     if ( read_atomic(&v->virq_to_evtchn[virq]) )
         ERROR_EXIT(-EEXIST);
 
-    if ( port != 0 )
-    {
-        if ( (rc = evtchn_allocate_port(d, port)) != 0 )
-            ERROR_EXIT(rc);
-    }
-    else
-    {
-        int alloc_port = get_free_port(d);
-
-        if ( alloc_port < 0 )
-            ERROR_EXIT(alloc_port);
-        port = alloc_port;
-    }
+    port = rc = evtchn_get_port(d, port);
+    if ( rc < 0 )
+        ERROR_EXIT(rc);
+    rc = 0;
 
     chn = evtchn_from_port(d, port);
 
@@ -1204,7 +1237,7 @@ long do_event_channel_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         struct evtchn_alloc_unbound alloc_unbound;
         if ( copy_from_guest(&alloc_unbound, arg, 1) != 0 )
             return -EFAULT;
-        rc = evtchn_alloc_unbound(&alloc_unbound);
+        rc = evtchn_alloc_unbound(&alloc_unbound, 0);
         if ( !rc && __copy_to_guest(arg, &alloc_unbound, 1) )
             rc = -EFAULT; /* Cleaning up here would be a mess! */
         break;
@@ -1214,7 +1247,7 @@ long do_event_channel_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         struct evtchn_bind_interdomain bind_interdomain;
         if ( copy_from_guest(&bind_interdomain, arg, 1) != 0 )
             return -EFAULT;
-        rc = evtchn_bind_interdomain(&bind_interdomain);
+        rc = evtchn_bind_interdomain(&bind_interdomain, current->domain, 0);
         if ( !rc && __copy_to_guest(arg, &bind_interdomain, 1) )
             rc = -EFAULT; /* Cleaning up here would be a mess! */
         break;

@@ -152,6 +152,10 @@ struct paging_mode {
 /*****************************************************************************
  * Log dirty code */
 
+#define paging_logdirty_levels() \
+    (DIV_ROUND_UP(PADDR_BITS - PAGE_SHIFT - (PAGE_SHIFT + 3), \
+                  PAGE_SHIFT - ilog2(sizeof(mfn_t))) + 1)
+
 #if PG_log_dirty
 
 /* get the dirty bitmap for a specific range of pfns */

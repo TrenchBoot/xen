@@ -161,6 +161,7 @@ static const char *const str_e8b[32] =
     [24] = "amd-ssbd",         [25] = "virt-ssbd",
     [26] = "ssb-no",
     [28] = "psfd",             [29] = "btc-no",
+    [30] = "ibpb-ret",
 };
 
 static const char *const str_7d0[32] =
@@ -194,6 +195,9 @@ static const char *const str_e21a[32] =
 {
     [ 2] = "lfence+",
     [ 6] = "nscb",
+
+    /* 26 */                [27] = "sbpb",
+    [28] = "ibpb-brtype",   [29] = "srso-no",
 };
 
 static const char *const str_7b1[32] =
@@ -201,11 +205,42 @@ static const char *const str_7b1[32] =
     [ 0] = "ppin",
 };
 
+static const char *const str_7c1[32] =
+{
+};
+
+static const char *const str_7d1[32] =
+{
+    [18] = "cet-sss",
+};
+
 static const char *const str_7d2[32] =
 {
-    [ 0] = "intel-psfd",
+    [ 0] = "intel-psfd",    [ 1] = "ipred-ctrl",
+    [ 2] = "rrsba-ctrl",
+    [ 4] = "bhi-ctrl",      [ 5] = "mcdt-no",
+};
 
-    /* 4 */                 [ 5] = "mcdt-no",
+static const char *const str_m10Al[32] =
+{
+    [ 0] = "rdcl-no",             [ 1] = "eibrs",
+    [ 2] = "rsba",                [ 3] = "skip-l1dfl",
+    [ 4] = "intel-ssb-no",        [ 5] = "mds-no",
+    [ 6] = "if-pschange-mc-no",   [ 7] = "tsx-ctrl",
+    [ 8] = "taa-no",              [ 9] = "mcu-ctrl",
+    [10] = "misc-pkg-ctrl",       [11] = "energy-ctrl",
+    [12] = "doitm",               [13] = "sbdr-ssdp-no",
+    [14] = "fbsdp-no",            [15] = "psdp-no",
+    /* 16 */                      [17] = "fb-clear",
+    [18] = "fb-clear-ctrl",       [19] = "rrsba",
+    [20] = "bhi-no",              [21] = "xapic-status",
+    /* 22 */                      [23] = "ovrclk-status",
+    [24] = "pbrsb-no",            [25] = "gds-ctrl",
+    [26] = "gds-no",
+};
+
+static const char *const str_m10Ah[32] =
+{
 };
 
 static const struct {
@@ -214,34 +249,35 @@ static const struct {
     const char *const *strs;
 } decodes[] =
 {
-    { "0x00000001.edx",   "1d",  str_1d },
-    { "0x00000001.ecx",   "1c",  str_1c },
-    { "0x80000001.edx",   "e1d", str_e1d },
-    { "0x80000001.ecx",   "e1c", str_e1c },
-    { "0x0000000d:1.eax", "Da1", str_Da1 },
-    { "0x00000007:0.ebx", "7b0", str_7b0 },
-    { "0x00000007:0.ecx", "7c0", str_7c0 },
-    { "0x80000007.edx",   "e7d", str_e7d },
-    { "0x80000008.ebx",   "e8b", str_e8b },
-    { "0x00000007:0.edx", "7d0", str_7d0 },
-    { "0x00000007:1.eax", "7a1", str_7a1 },
-    { "0x80000021.eax",  "e21a", str_e21a },
-    { "0x00000007:1.ebx", "7b1", str_7b1 },
-    { "0x00000007:2.edx", "7d2", str_7d2 },
+    { "CPUID 0x00000001.edx",        "1d", str_1d },
+    { "CPUID 0x00000001.ecx",        "1c", str_1c },
+    { "CPUID 0x80000001.edx",       "e1d", str_e1d },
+    { "CPUID 0x80000001.ecx",       "e1c", str_e1c },
+    { "CPUID 0x0000000d:1.eax",     "Da1", str_Da1 },
+    { "CPUID 0x00000007:0.ebx",     "7b0", str_7b0 },
+    { "CPUID 0x00000007:0.ecx",     "7c0", str_7c0 },
+    { "CPUID 0x80000007.edx",       "e7d", str_e7d },
+    { "CPUID 0x80000008.ebx",       "e8b", str_e8b },
+    { "CPUID 0x00000007:0.edx",     "7d0", str_7d0 },
+    { "CPUID 0x00000007:1.eax",     "7a1", str_7a1 },
+    { "CPUID 0x80000021.eax",      "e21a", str_e21a },
+    { "CPUID 0x00000007:1.ebx",     "7b1", str_7b1 },
+    { "CPUID 0x00000007:2.edx",     "7d2", str_7d2 },
+    { "CPUID 0x00000007:1.ecx",     "7c1", str_7c1 },
+    { "CPUID 0x00000007:1.edx",     "7d1", str_7d1 },
+    { "MSR_ARCH_CAPS.lo",         "m10Al", str_m10Al },
+    { "MSR_ARCH_CAPS.hi",         "m10Ah", str_m10Ah },
 };
 
-#define COL_ALIGN "18"
+#define COL_ALIGN "24"
 
-static struct fsinfo {
-    const char *name;
-    uint32_t len;
-    uint32_t *fs;
-} featuresets[] =
-{
-    [XEN_SYSCTL_cpu_featureset_host] = { "Host", 0, NULL },
-    [XEN_SYSCTL_cpu_featureset_raw]  = { "Raw",  0, NULL },
-    [XEN_SYSCTL_cpu_featureset_pv]   = { "PV",   0, NULL },
-    [XEN_SYSCTL_cpu_featureset_hvm]  = { "HVM",  0, NULL },
+static const char *const fs_names[] = {
+    [XEN_SYSCTL_cpu_featureset_raw]     = "Raw",
+    [XEN_SYSCTL_cpu_featureset_host]    = "Host",
+    [XEN_SYSCTL_cpu_featureset_pv]      = "PV Default",
+    [XEN_SYSCTL_cpu_featureset_hvm]     = "HVM Default",
+    [XEN_SYSCTL_cpu_featureset_pv_max]  = "PV Max",
+    [XEN_SYSCTL_cpu_featureset_hvm_max] = "HVM Max",
 };
 
 static void dump_leaf(uint32_t leaf, const char *const *strs)
@@ -288,22 +324,10 @@ static void decode_featureset(const uint32_t *features,
     }
 }
 
-static int get_featureset(xc_interface *xch, unsigned int idx)
-{
-    struct fsinfo *f = &featuresets[idx];
-
-    f->len = nr_features;
-    f->fs = calloc(nr_features, sizeof(*f->fs));
-
-    if ( !f->fs )
-        err(1, "calloc(, featureset)");
-
-    return xc_get_cpu_featureset(xch, idx, &f->len, f->fs);
-}
-
 static void dump_info(xc_interface *xch, bool detail)
 {
     unsigned int i;
+    uint32_t *fs;
 
     printf("nr_features: %u\n", nr_features);
 
@@ -334,26 +358,34 @@ static void dump_info(xc_interface *xch, bool detail)
                       nr_features, "HVM Hap Default", detail);
 
     printf("\nDynamic sets:\n");
-    for ( i = 0; i < ARRAY_SIZE(featuresets); ++i )
+
+    fs = malloc(sizeof(*fs) * nr_features);
+    if ( !fs )
+        err(1, "malloc(featureset)");
+
+    for ( i = 0; i < ARRAY_SIZE(fs_names); ++i )
     {
-        if ( get_featureset(xch, i) )
+        uint32_t len = nr_features;
+        int ret;
+
+        memset(fs, 0, sizeof(*fs) * nr_features);
+
+        ret = xc_get_cpu_featureset(xch, i, &len, fs);
+        if ( ret )
         {
             if ( errno == EOPNOTSUPP )
             {
-                printf("%s featureset not supported by Xen\n",
-                       featuresets[i].name);
+                printf("%s featureset not supported by Xen\n", fs_names[i]);
                 continue;
             }
 
             err(1, "xc_get_featureset()");
         }
 
-        decode_featureset(featuresets[i].fs, featuresets[i].len,
-                          featuresets[i].name, detail);
+        decode_featureset(fs, len, fs_names[i], detail);
     }
 
-    for ( i = 0; i < ARRAY_SIZE(featuresets); ++i )
-        free(featuresets[i].fs);
+    free(fs);
 }
 
 static void print_policy(const char *name,

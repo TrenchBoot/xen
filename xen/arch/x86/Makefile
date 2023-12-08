@@ -18,6 +18,7 @@ obj-y += bitops.o
 obj-bin-y += bzimage.init.o
 obj-bin-y += clear_page.o
 obj-bin-y += copy_page.o
+obj-y += cpu-policy.o
 obj-y += cpuid.o
 obj-$(CONFIG_PV) += compat.o
 obj-$(CONFIG_PV32) += x86_64/compat.o
@@ -242,7 +243,7 @@ $(obj)/efi/buildid.o $(obj)/efi/relocs-dummy.o: ;
 .PHONY: include
 include: $(objtree)/arch/x86/include/asm/asm-macros.h
 
-$(obj)/asm-macros.i: CFLAGS-y += -D__ASSEMBLY__ -P
+$(obj)/asm-macros.i: CFLAGS-y += -P
 
 $(objtree)/arch/x86/include/asm/asm-macros.h: $(obj)/asm-macros.i $(src)/Makefile
 	$(call filechk,asm-macros.h)

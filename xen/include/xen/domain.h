@@ -35,6 +35,14 @@ void arch_get_domain_info(const struct domain *d,
 /* Should domain memory be directly mapped? */
 #define CDF_directmap            (1U << 1)
 #endif
+/* Is domain memory on static allocation? */
+#ifdef CONFIG_STATIC_MEMORY
+#define CDF_staticmem            (1U << 2)
+#else
+#define CDF_staticmem            0
+#endif
+
+#define is_domain_using_staticmem(d) ((d)->cdf & CDF_staticmem)
 
 /*
  * Arch-specifics.
@@ -89,6 +97,9 @@ void arch_get_info_guest(struct vcpu *, vcpu_guest_context_u);
 
 int arch_initialise_vcpu(struct vcpu *v, XEN_GUEST_HANDLE_PARAM(void) arg);
 int default_initialise_vcpu(struct vcpu *v, XEN_GUEST_HANDLE_PARAM(void) arg);
+
+int arch_get_paging_mempool_size(struct domain *d, uint64_t *size /* bytes */);
+int arch_set_paging_mempool_size(struct domain *d, uint64_t size /* bytes */);
 
 int domain_relinquish_resources(struct domain *d);
 

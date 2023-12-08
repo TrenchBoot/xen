@@ -44,8 +44,6 @@ type x86_arch_emulation_flags =
 
 type x86_arch_misc_flags =
   | X86_MSR_RELAXED
-  | X86_ASSISTED_XAPIC
-  | X86_ASSISTED_X2APIC
 
 type xen_x86_arch_domainconfig = {
   emulation_flags: x86_arch_emulation_flags list;
@@ -115,12 +113,13 @@ type physinfo_cap_flag =
   | CAP_Gnttab_v1
   | CAP_Gnttab_v2
 
-type x86_physinfo_arch_cap_flag =
-  | CAP_X86_ASSISTED_XAPIC
-  | CAP_X86_ASSISTED_X2APIC
+type arm_physinfo_cap_flag
 
-type physinfo_arch_cap_flag =
-  | X86 of x86_physinfo_arch_cap_flag
+type x86_physinfo_cap_flag
+
+type arch_physinfo_cap_flags =
+  | ARM of arm_physinfo_cap_flag list
+  | X86 of x86_physinfo_cap_flag list
 
 type physinfo = {
   threads_per_core : int;
@@ -133,7 +132,7 @@ type physinfo = {
   scrub_pages      : nativeint;
   capabilities     : physinfo_cap_flag list;
   max_nr_cpus      : int; (** compile-time max possible number of nr_cpus *)
-  arch_capabilities : physinfo_arch_cap_flag list;
+  arch_capabilities : arch_physinfo_cap_flags;
 }
 type version = { major : int; minor : int; extra : string; }
 type compile_info = {
@@ -236,7 +235,13 @@ external version_changeset : handle -> string = "stub_xc_version_changeset"
 external version_capabilities : handle -> string
   = "stub_xc_version_capabilities"
 
-type featureset_index = Featureset_raw | Featureset_host | Featureset_pv | Featureset_hvm
+type featureset_index =
+  | Featureset_raw
+  | Featureset_host
+  | Featureset_pv
+  | Featureset_hvm
+  | Featureset_pv_max
+  | Featureset_hvm_max
 external get_cpu_featureset : handle -> featureset_index -> int64 array = "stub_xc_get_cpu_featureset"
 
 external pages_to_kib : int64 -> int64 = "stub_pages_to_kib"

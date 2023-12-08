@@ -716,8 +716,6 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
             ret = iomem_permit_access(d, mfn, mfn + nr_mfns - 1);
         else
             ret = iomem_deny_access(d, mfn, mfn + nr_mfns - 1);
-        if ( !ret )
-            memory_type_changed(d);
         break;
     }
 
@@ -778,8 +776,6 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
                        "memory_map: error %ld removing dom%d access to [%lx,%lx]\n",
                        ret, d->domain_id, mfn, mfn_end);
         }
-        /* Do this unconditionally to cover errors on above failure paths. */
-        memory_type_changed(d);
         break;
     }
 
@@ -876,6 +872,20 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
     case XEN_DOMCTL_deassign_device:
     case XEN_DOMCTL_get_device_group:
         ret = iommu_do_domctl(op, d, u_domctl);
+        break;
+
+    case XEN_DOMCTL_get_paging_mempool_size:
+        ret = arch_get_paging_mempool_size(d, &op->u.paging_mempool.size);
+        if ( !ret )
+            copyback = 1;
+        break;
+
+    case XEN_DOMCTL_set_paging_mempool_size:
+        ret = arch_set_paging_mempool_size(d, op->u.paging_mempool.size);
+
+        if ( ret == -ERESTART )
+            ret = hypercall_create_continuation(
+                __HYPERVISOR_domctl, "h", u_domctl);
         break;
 
     default:

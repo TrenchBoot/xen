@@ -381,6 +381,9 @@ struct domain
     struct page_list_head page_list;  /* linked list */
     struct page_list_head extra_page_list; /* linked list (size extra_pages) */
     struct page_list_head xenpage_list; /* linked list (size xenheap_pages) */
+#ifdef CONFIG_STATIC_MEMORY
+    struct page_list_head resv_page_list; /* linked list */
+#endif
 
     /*
      * This field should only be directly accessed by domain_adjust_tot_pages()
@@ -666,8 +669,15 @@ static inline void get_knownalive_domain(struct domain *d)
     ASSERT(!(atomic_read(&d->refcnt) & DOMAIN_DESTROYED));
 }
 
+struct affinity_masks;
+
 int domain_set_node_affinity(struct domain *d, const nodemask_t *affinity);
-void domain_update_node_affinity(struct domain *d);
+void domain_update_node_aff(struct domain *d, struct affinity_masks *affinity);
+
+static inline void domain_update_node_affinity(struct domain *d)
+{
+    domain_update_node_aff(d, NULL);
+}
 
 /*
  * To be implemented by each architecture, sanity checking the configuration
@@ -1009,7 +1019,6 @@ void vcpu_set_periodic_timer(struct vcpu *v, s_time_t value);
 void sched_setup_dom0_vcpus(struct domain *d);
 int vcpu_temporary_affinity(struct vcpu *v, unsigned int cpu, uint8_t reason);
 int vcpu_set_hard_affinity(struct vcpu *v, const cpumask_t *affinity);
-void restore_vcpu_affinity(struct domain *d);
 int vcpu_affinity_domctl(struct domain *d, uint32_t cmd,
                          struct xen_domctl_vcpuaffinity *vcpuaff);
 

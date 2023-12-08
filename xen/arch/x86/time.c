@@ -1361,7 +1361,7 @@ s_time_t get_s_time_fixed(u64 at_tsc)
     return t->stamp.local_stime + scale_delta(delta, &t->tsc_scale);
 }
 
-s_time_t get_s_time()
+s_time_t get_s_time(void)
 {
     return get_s_time_fixed(0);
 }
@@ -2585,7 +2585,7 @@ int tsc_set_info(struct domain *d,
     case TSC_MODE_ALWAYS_EMULATE:
         d->arch.vtsc_offset = get_s_time() - elapsed_nsec;
         d->arch.tsc_khz = gtsc_khz ?: cpu_khz;
-        set_time_scale(&d->arch.vtsc_to_ns, d->arch.tsc_khz * 1000);
+        set_time_scale(&d->arch.vtsc_to_ns, d->arch.tsc_khz * 1000UL);
 
         /*
          * In default mode use native TSC if the host has safe TSC and

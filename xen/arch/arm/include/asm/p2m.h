@@ -192,8 +192,21 @@ void setup_virt_paging(void);
 /* Init the datastructures for later use by the p2m code */
 int p2m_init(struct domain *d);
 
-/* Return all the p2m resources to Xen. */
-void p2m_teardown(struct domain *d);
+/*
+ * The P2M resources are freed in two parts:
+ *  - p2m_teardown() will be called preemptively when relinquish the
+ *    resources, in which case it will free large resources (e.g. intermediate
+ *    page-tables) that requires preemption.
+ *  - p2m_final_teardown() will be called when domain struct is been
+ *    freed. This *cannot* be preempted and therefore one small
+ *    resources should be freed here.
+ *  Note that p2m_final_teardown() will also call p2m_teardown(), to properly
+ *  free the P2M when failures happen in the domain creation with P2M pages
+ *  already in use. In this case p2m_teardown() is called non-preemptively and
+ *  p2m_teardown() will always return 0.
+ */
+int p2m_teardown(struct domain *d, bool allow_preemption);
+void p2m_final_teardown(struct domain *d);
 
 /*
  * Remove mapping refcount on each mapping page in the p2m
@@ -208,6 +221,9 @@ void p2m_restore_state(struct vcpu *n);
 
 /* Print debugging/statistial info about a domain's p2m */
 void p2m_dump_info(struct domain *d);
+
+int p2m_set_allocation(struct domain *d, unsigned long pages, bool *preempted);
+int p2m_teardown_allocation(struct domain *d);
 
 static inline void p2m_write_lock(struct p2m_domain *p2m)
 {
@@ -253,6 +269,8 @@ mfn_t p2m_get_entry(struct p2m_domain *p2m, gfn_t gfn,
 /*
  * Direct set a p2m entry: only for use by the P2M code.
  * The P2M write lock should be taken.
+ * TODO: Add a check in __p2m_set_entry() to avoid creating a mapping in
+ * arch_domain_create() that requires p2m_put_l3_page() to be called.
  */
 int p2m_set_entry(struct p2m_domain *p2m,
                   gfn_t sgfn,

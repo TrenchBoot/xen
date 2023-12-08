@@ -7,6 +7,7 @@ AC_INIT([Xen Hypervisor Tools], m4_esyscmd([../version.sh ../xen/Makefile]),
 AC_CONFIG_SRCDIR([libs/light/libxl.c])
 AC_CONFIG_FILES([
 ../config/Tools.mk
+hotplug/common/hotplugpath.sh
 hotplug/FreeBSD/rc.d/xencommons
 hotplug/FreeBSD/rc.d/xendriverdomain
 hotplug/Linux/init.d/sysconfig.xencommons
@@ -69,7 +70,6 @@ m4_include([../m4/uuid.m4])
 m4_include([../m4/pkg.m4])
 m4_include([../m4/curses.m4])
 m4_include([../m4/pthread.m4])
-m4_include([../m4/ptyfuncs.m4])
 m4_include([../m4/extfs.m4])
 m4_include([../m4/fetcher.m4])
 m4_include([../m4/ax_compare_version.m4])
@@ -81,6 +81,7 @@ m4_include([../m4/header.m4])
 AX_XEN_EXPAND_CONFIG()
 
 # Enable/disable options
+AX_ARG_DEFAULT_ENABLE([werror], [Build tools without -Werror])
 AX_ARG_DEFAULT_DISABLE([rpath], [Build tools with -Wl,-rpath,LIBDIR])
 AX_ARG_DEFAULT_DISABLE([githttp], [Download GIT repositories via HTTP])
 AX_ARG_DEFAULT_ENABLE([monitors], [Disable xenstat and xentop monitoring tools])
@@ -415,7 +416,6 @@ AC_SUBST([ZLIB_CFLAGS])
 AC_SUBST([ZLIB_LIBS])
 AX_CHECK_EXTFS
 AX_CHECK_PTHREAD
-AX_CHECK_PTYFUNCS
 AC_CHECK_LIB([yajl], [yajl_alloc], [],
     [AC_MSG_ERROR([Could not find yajl])])
 AC_CHECK_LIB([z], [deflateCopy], [], [AC_MSG_ERROR([Could not find zlib])])
@@ -480,7 +480,6 @@ AX_AVAILABLE_SYSTEMD()
 AS_IF([test "x$systemd" = "xy"], [
     AC_CONFIG_FILES([
     hotplug/Linux/systemd/proc-xen.mount
-    hotplug/Linux/systemd/var-lib-xenstored.mount
     hotplug/Linux/systemd/xen-init-dom0.service
     hotplug/Linux/systemd/xen-qemu-dom0-disk-backend.service
     hotplug/Linux/systemd/xen-watchdog.service

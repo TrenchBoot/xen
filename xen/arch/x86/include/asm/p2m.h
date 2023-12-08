@@ -600,7 +600,7 @@ int p2m_init(struct domain *d);
 int p2m_alloc_table(struct p2m_domain *p2m);
 
 /* Return all the p2m resources to Xen. */
-void p2m_teardown(struct p2m_domain *p2m);
+void p2m_teardown(struct p2m_domain *p2m, bool remove_root, bool *preempted);
 void p2m_final_teardown(struct domain *d);
 
 /* Add/remove a page to/from a domain's p2m table. */
@@ -877,6 +877,26 @@ static inline struct p2m_domain *p2m_get_altp2m(struct vcpu *v)
     BUG_ON(index >= MAX_ALTP2M);
 
     return v->domain->arch.altp2m_p2m[index];
+}
+
+/* set current alternate p2m table */
+static inline bool p2m_set_altp2m(struct vcpu *v, unsigned int idx)
+{
+    struct p2m_domain *orig;
+
+    BUG_ON(idx >= MAX_ALTP2M);
+
+    if ( idx == vcpu_altp2m(v).p2midx )
+        return false;
+
+    orig = p2m_get_altp2m(v);
+    BUG_ON(!orig);
+    atomic_dec(&orig->active_vcpus);
+
+    vcpu_altp2m(v).p2midx = idx;
+    atomic_inc(&v->domain->arch.altp2m_p2m[idx]->active_vcpus);
+
+    return true;
 }
 
 /* Switch alternate p2m for a single vcpu */

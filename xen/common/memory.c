@@ -245,6 +245,29 @@ static void populate_physmap(struct memop_args *a)
 
                 mfn = _mfn(gpfn);
             }
+            else if ( is_domain_using_staticmem(d) )
+            {
+                /*
+                 * No easy way to guarantee the retrieved pages are contiguous,
+                 * so forbid non-zero-order requests here.
+                 */
+                if ( a->extent_order != 0 )
+                {
+                    gdprintk(XENLOG_WARNING,
+                             "Cannot allocate static order-%u pages for %pd\n",
+                             a->extent_order, d);
+                    goto out;
+                }
+
+                mfn = acquire_reserved_page(d, a->memflags);
+                if ( mfn_eq(mfn, INVALID_MFN) )
+                {
+                    gdprintk(XENLOG_WARNING,
+                             "%pd: failed to retrieve a reserved page\n",
+                             d);
+                    goto out;
+                }
+            }
             else
             {
                 page = alloc_domheap_pages(d, a->extent_order, a->memflags);
@@ -1438,21 +1461,16 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 
         rc = args.nr_done;
 
-        if ( args.preempted )
-            return hypercall_create_continuation(
-                __HYPERVISOR_memory_op, "lh",
-                op | (rc << MEMOP_EXTENT_SHIFT), arg);
-
 #ifdef CONFIG_X86
         if ( pv_shim && op == XENMEM_decrease_reservation )
-            /*
-             * Only call pv_shim_offline_memory when the hypercall has
-             * finished. Note that nr_done is used to cope in case the
-             * hypercall has failed and only part of the extents where
-             * processed.
-             */
-            pv_shim_offline_memory(args.nr_done, args.extent_order);
+            pv_shim_offline_memory(args.nr_done - start_extent,
+                                   args.extent_order);
 #endif
+
+        if ( args.preempted )
+           return hypercall_create_continuation(
+                __HYPERVISOR_memory_op, "lh",
+                op | (rc << MEMOP_EXTENT_SHIFT), arg);
 
         break;
 

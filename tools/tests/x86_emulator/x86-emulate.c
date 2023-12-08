@@ -38,7 +38,7 @@
 #define put_stub(stb) ((stb).addr = 0)
 
 uint32_t mxcsr_mask = 0x0000ffbf;
-struct cpuid_policy cp;
+struct cpu_policy cp;
 
 static char fpu_save_area[0x4000] __attribute__((__aligned__((64))));
 static bool use_xsave;
@@ -85,7 +85,7 @@ bool emul_test_init(void)
 
     unsigned long sp;
 
-    x86_cpuid_policy_fill_native(&cp);
+    x86_cpu_policy_fill_native(&cp);
 
     /*
      * The emulator doesn't use these instructions, so can always emulate

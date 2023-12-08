@@ -155,7 +155,7 @@ bool lu_is_pending(void)
 
 struct cmd_s {
 	char *cmd;
-	int (*func)(void *, struct connection *, char **, int);
+	int (*func)(const void *, struct connection *, char **, int);
 	char *pars;
 	/*
 	 * max_pars can be used to limit the size of the parameter vector,
@@ -167,7 +167,7 @@ struct cmd_s {
 	unsigned int max_pars;
 };
 
-static int do_control_check(void *ctx, struct connection *conn,
+static int do_control_check(const void *ctx, struct connection *conn,
 			    char **vec, int num)
 {
 	if (num)
@@ -179,7 +179,7 @@ static int do_control_check(void *ctx, struct connection *conn,
 	return 0;
 }
 
-static int do_control_log(void *ctx, struct connection *conn,
+static int do_control_log(const void *ctx, struct connection *conn,
 			  char **vec, int num)
 {
 	if (num != 1)
@@ -196,8 +196,117 @@ static int do_control_log(void *ctx, struct connection *conn,
 	return 0;
 }
 
+struct quota {
+	const char *name;
+	int *quota;
+	const char *descr;
+};
+
+static const struct quota hard_quotas[] = {
+	{ "nodes", &quota_nb_entry_per_domain, "Nodes per domain" },
+	{ "watches", &quota_nb_watch_per_domain, "Watches per domain" },
+	{ "transactions", &quota_max_transaction, "Transactions per domain" },
+	{ "outstanding", &quota_req_outstanding,
+		"Outstanding requests per domain" },
+	{ "transaction-nodes", &quota_trans_nodes,
+		"Max. number of accessed nodes per transaction" },
+	{ "memory", &quota_memory_per_domain_hard,
+		"Total Xenstore memory per domain (error level)" },
+	{ "node-size", &quota_max_entry_size, "Max. size of a node" },
+	{ "path-max", &quota_max_path_len, "Max. length of a node path" },
+	{ "permissions", &quota_nb_perms_per_node,
+		"Max. number of permissions per node" },
+	{ NULL, NULL, NULL }
+};
+
+static const struct quota soft_quotas[] = {
+	{ "memory", &quota_memory_per_domain_soft,
+		"Total Xenstore memory per domain (warning level)" },
+	{ NULL, NULL, NULL }
+};
+
+static int quota_show_current(const void *ctx, struct connection *conn,
+			      const struct quota *quotas)
+{
+	char *resp;
+	unsigned int i;
+
+	resp = talloc_strdup(ctx, "Quota settings:\n");
+	if (!resp)
+		return ENOMEM;
+
+	for (i = 0; quotas[i].quota; i++) {
+		resp = talloc_asprintf_append(resp, "%-17s: %8d %s\n",
+					      quotas[i].name, *quotas[i].quota,
+					      quotas[i].descr);
+		if (!resp)
+			return ENOMEM;
+	}
+
+	send_reply(conn, XS_CONTROL, resp, strlen(resp) + 1);
+
+	return 0;
+}
+
+static int quota_set(const void *ctx, struct connection *conn,
+		     char **vec, int num, const struct quota *quotas)
+{
+	unsigned int i;
+	int val;
+
+	if (num != 2)
+		return EINVAL;
+
+	val = atoi(vec[1]);
+	if (val < 1)
+		return EINVAL;
+
+	for (i = 0; quotas[i].quota; i++) {
+		if (!strcmp(vec[0], quotas[i].name)) {
+			*quotas[i].quota = val;
+			send_ack(conn, XS_CONTROL);
+			return 0;
+		}
+	}
+
+	return EINVAL;
+}
+
+static int quota_get(const void *ctx, struct connection *conn,
+		     char **vec, int num)
+{
+	if (num != 1)
+		return EINVAL;
+
+	return domain_get_quota(ctx, conn, atoi(vec[0]));
+}
+
+static int do_control_quota(const void *ctx, struct connection *conn,
+			    char **vec, int num)
+{
+	if (num == 0)
+		return quota_show_current(ctx, conn, hard_quotas);
+
+	if (!strcmp(vec[0], "set"))
+		return quota_set(ctx, conn, vec + 1, num - 1, hard_quotas);
+
+	return quota_get(ctx, conn, vec, num);
+}
+
+static int do_control_quota_s(const void *ctx, struct connection *conn,
+			      char **vec, int num)
+{
+	if (num == 0)
+		return quota_show_current(ctx, conn, soft_quotas);
+
+	if (!strcmp(vec[0], "set"))
+		return quota_set(ctx, conn, vec + 1, num - 1, soft_quotas);
+
+	return EINVAL;
+}
+
 #ifdef __MINIOS__
-static int do_control_memreport(void *ctx, struct connection *conn,
+static int do_control_memreport(const void *ctx, struct connection *conn,
 				char **vec, int num)
 {
 	if (num)
@@ -209,7 +318,7 @@ static int do_control_memreport(void *ctx, struct connection *conn,
 	return 0;
 }
 #else
-static int do_control_logfile(void *ctx, struct connection *conn,
+static int do_control_logfile(const void *ctx, struct connection *conn,
 			      char **vec, int num)
 {
 	if (num != 1)
@@ -224,7 +333,7 @@ static int do_control_logfile(void *ctx, struct connection *conn,
 	return 0;
 }
 
-static int do_control_memreport(void *ctx, struct connection *conn,
+static int do_control_memreport(const void *ctx, struct connection *conn,
 				char **vec, int num)
 {
 	FILE *fp;
@@ -264,7 +373,7 @@ static int do_control_memreport(void *ctx, struct connection *conn,
 }
 #endif
 
-static int do_control_print(void *ctx, struct connection *conn,
+static int do_control_print(const void *ctx, struct connection *conn,
 			    char **vec, int num)
 {
 	if (num != 1)
@@ -766,7 +875,7 @@ static const char *lu_start(const void *ctx, struct connection *conn,
 	return NULL;
 }
 
-static int do_control_lu(void *ctx, struct connection *conn,
+static int do_control_lu(const void *ctx, struct connection *conn,
 			 char **vec, int num)
 {
 	const char *ret = NULL;
@@ -813,7 +922,7 @@ static int do_control_lu(void *ctx, struct connection *conn,
 }
 #endif
 
-static int do_control_help(void *, struct connection *, char **, int);
+static int do_control_help(const void *, struct connection *, char **, int);
 
 static struct cmd_s cmds[] = {
 	{ "check", do_control_check, "" },
@@ -847,10 +956,12 @@ static struct cmd_s cmds[] = {
 	{ "memreport", do_control_memreport, "[<file>]" },
 #endif
 	{ "print", do_control_print, "<string>" },
+	{ "quota", do_control_quota, "[set <name> <val>|<domid>]" },
+	{ "quota-soft", do_control_quota_s, "[set <name> <val>]" },
 	{ "help", do_control_help, "" },
 };
 
-static int do_control_help(void *ctx, struct connection *conn,
+static int do_control_help(const void *ctx, struct connection *conn,
 			   char **vec, int num)
 {
 	int cmd;
@@ -873,12 +984,13 @@ static int do_control_help(void *ctx, struct connection *conn,
 	return 0;
 }
 
-int do_control(struct connection *conn, struct buffered_data *in)
+int do_control(const void *ctx, struct connection *conn,
+	       struct buffered_data *in)
 {
 	unsigned int cmd, num, off;
 	char **vec = NULL;
 
-	if (conn->id != 0)
+	if (domain_is_unprivileged(conn))
 		return EACCES;
 
 	off = get_string(in, 0);
@@ -893,11 +1005,11 @@ int do_control(struct connection *conn, struct buffered_data *in)
 	num = xs_count_strings(in->buffer, in->used);
 	if (cmds[cmd].max_pars)
 		num = min(num, cmds[cmd].max_pars);
-	vec = talloc_array(in, char *, num);
+	vec = talloc_array(ctx, char *, num);
 	if (!vec)
 		return ENOMEM;
 	if (get_strings(in, vec, num) < num)
 		return EIO;
 
-	return cmds[cmd].func(in, conn, vec + 1, num - 1);
+	return cmds[cmd].func(ctx, conn, vec + 1, num - 1);
 }

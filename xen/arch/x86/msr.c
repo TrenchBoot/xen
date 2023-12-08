@@ -24,6 +24,8 @@
 #include <xen/nospec.h>
 #include <xen/sched.h>
 
+#include <asm/amd.h>
+#include <asm/cpu-policy.h>
 #include <asm/debugreg.h>
 #include <asm/hvm/nestedhvm.h>
 #include <asm/hvm/viridian.h>
@@ -35,145 +37,6 @@
 #include <public/hvm/params.h>
 
 DEFINE_PER_CPU(uint32_t, tsc_aux);
-
-struct msr_policy __read_mostly     raw_msr_policy,
-                  __read_mostly    host_msr_policy;
-#ifdef CONFIG_PV
-struct msr_policy __read_mostly  pv_max_msr_policy;
-struct msr_policy __read_mostly  pv_def_msr_policy;
-#endif
-#ifdef CONFIG_HVM
-struct msr_policy __read_mostly hvm_max_msr_policy;
-struct msr_policy __read_mostly hvm_def_msr_policy;
-#endif
-
-static void __init calculate_raw_policy(void)
-{
-    struct msr_policy *mp = &raw_msr_policy;
-
-    /* 0x000000ce  MSR_INTEL_PLATFORM_INFO */
-    /* Was already added by probe_cpuid_faulting() */
-
-    if ( cpu_has_arch_caps )
-        rdmsrl(MSR_ARCH_CAPABILITIES, mp->arch_caps.raw);
-}
-
-static void __init calculate_host_policy(void)
-{
-    struct msr_policy *mp = &host_msr_policy;
-
-    *mp = raw_msr_policy;
-
-    /* 0x000000ce  MSR_INTEL_PLATFORM_INFO */
-    /* probe_cpuid_faulting() sanity checks presence of MISC_FEATURES_ENABLES */
-    mp->platform_info.cpuid_faulting = cpu_has_cpuid_faulting;
-
-    /* Temporary, until we have known_features[] for feature bits in MSRs. */
-    mp->arch_caps.raw &=
-        (ARCH_CAPS_RDCL_NO | ARCH_CAPS_IBRS_ALL | ARCH_CAPS_RSBA |
-         ARCH_CAPS_SKIP_L1DFL | ARCH_CAPS_SSB_NO | ARCH_CAPS_MDS_NO |
-         ARCH_CAPS_IF_PSCHANGE_MC_NO | ARCH_CAPS_TSX_CTRL | ARCH_CAPS_TAA_NO |
-         ARCH_CAPS_SBDR_SSDP_NO | ARCH_CAPS_FBSDP_NO | ARCH_CAPS_PSDP_NO |
-         ARCH_CAPS_FB_CLEAR | ARCH_CAPS_RRSBA | ARCH_CAPS_BHI_NO |
-         ARCH_CAPS_PBRSB_NO);
-}
-
-static void __init calculate_pv_max_policy(void)
-{
-    struct msr_policy *mp = &pv_max_msr_policy;
-
-    *mp = host_msr_policy;
-
-    mp->arch_caps.raw = 0; /* Not supported yet. */
-}
-
-static void __init calculate_pv_def_policy(void)
-{
-    struct msr_policy *mp = &pv_def_msr_policy;
-
-    *mp = pv_max_msr_policy;
-}
-
-static void __init calculate_hvm_max_policy(void)
-{
-    struct msr_policy *mp = &hvm_max_msr_policy;
-
-    *mp = host_msr_policy;
-
-    /* It's always possible to emulate CPUID faulting for HVM guests */
-    mp->platform_info.cpuid_faulting = true;
-
-    mp->arch_caps.raw = 0; /* Not supported yet. */
-}
-
-static void __init calculate_hvm_def_policy(void)
-{
-    struct msr_policy *mp = &hvm_def_msr_policy;
-
-    *mp = hvm_max_msr_policy;
-}
-
-void __init init_guest_msr_policy(void)
-{
-    calculate_raw_policy();
-    calculate_host_policy();
-
-    if ( IS_ENABLED(CONFIG_PV) )
-    {
-        calculate_pv_max_policy();
-        calculate_pv_def_policy();
-    }
-
-    if ( hvm_enabled )
-    {
-        calculate_hvm_max_policy();
-        calculate_hvm_def_policy();
-    }
-}
-
-int init_domain_msr_policy(struct domain *d)
-{
-    struct msr_policy *mp = is_pv_domain(d)
-        ? (IS_ENABLED(CONFIG_PV)  ?  &pv_def_msr_policy : NULL)
-        : (IS_ENABLED(CONFIG_HVM) ? &hvm_def_msr_policy : NULL);
-
-    if ( !mp )
-    {
-        ASSERT_UNREACHABLE();
-        return -EOPNOTSUPP;
-    }
-
-    mp = xmemdup(mp);
-    if ( !mp )
-        return -ENOMEM;
-
-    /* See comment in ctxt_switch_levelling() */
-    if ( !opt_dom0_cpuid_faulting && is_control_domain(d) && is_pv_domain(d) )
-        mp->platform_info.cpuid_faulting = false;
-
-    /*
-     * Expose the "hardware speculation behaviour" bits of ARCH_CAPS to dom0,
-     * so dom0 can turn off workarounds as appropriate.  Temporary, until the
-     * domain policy logic gains a better understanding of MSRs.
-     */
-    if ( is_hardware_domain(d) && cpu_has_arch_caps )
-    {
-        uint64_t val;
-
-        rdmsrl(MSR_ARCH_CAPABILITIES, val);
-
-        mp->arch_caps.raw = val &
-            (ARCH_CAPS_RDCL_NO | ARCH_CAPS_IBRS_ALL | ARCH_CAPS_RSBA |
-             ARCH_CAPS_SSB_NO | ARCH_CAPS_MDS_NO | ARCH_CAPS_IF_PSCHANGE_MC_NO |
-             ARCH_CAPS_TAA_NO | ARCH_CAPS_SBDR_SSDP_NO | ARCH_CAPS_FBSDP_NO |
-             ARCH_CAPS_PSDP_NO | ARCH_CAPS_FB_CLEAR | ARCH_CAPS_RRSBA |
-             ARCH_CAPS_BHI_NO | ARCH_CAPS_PBRSB_NO);
-    }
-
-    d->arch.msr = mp;
-
-    return 0;
-}
 
 int init_vcpu_msr_policy(struct vcpu *v)
 {
@@ -191,8 +54,7 @@ int guest_rdmsr(struct vcpu *v, uint32_t msr, uint64_t *val)
 {
     const struct vcpu *curr = current;
     const struct domain *d = v->domain;
-    const struct cpuid_policy *cp = d->arch.cpuid;
-    const struct msr_policy *mp = d->arch.msr;
+    const struct cpu_policy *cp = d->arch.cpu_policy;
     const struct vcpu_msrs *msrs = v->arch.msrs;
     int ret = X86EMUL_OKAY;
 
@@ -276,13 +138,13 @@ int guest_rdmsr(struct vcpu *v, uint32_t msr, uint64_t *val)
         goto get_reg;
 
     case MSR_INTEL_PLATFORM_INFO:
-        *val = mp->platform_info.raw;
+        *val = cp->platform_info.raw;
         break;
 
     case MSR_ARCH_CAPABILITIES:
         if ( !cp->feat.arch_caps )
             goto gp_fault;
-        *val = mp->arch_caps.raw;
+        *val = cp->arch_caps.raw;
         break;
 
     case MSR_INTEL_MISC_FEATURES_ENABLES:
@@ -458,7 +320,7 @@ int guest_rdmsr(struct vcpu *v, uint32_t msr, uint64_t *val)
  * separate CPUID features for this functionality, but only set will be
  * active.
  */
-uint64_t msr_spec_ctrl_valid_bits(const struct cpuid_policy *cp)
+uint64_t msr_spec_ctrl_valid_bits(const struct cpu_policy *cp)
 {
     bool ssbd = cp->feat.ssbd || cp->extd.amd_ssbd;
     bool psfd = cp->feat.intel_psfd || cp->extd.psfd;
@@ -477,8 +339,7 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
 {
     const struct vcpu *curr = current;
     struct domain *d = v->domain;
-    const struct cpuid_policy *cp = d->arch.cpuid;
-    const struct msr_policy *mp = d->arch.msr;
+    const struct cpu_policy *cp = d->arch.cpu_policy;
     struct vcpu_msrs *msrs = v->arch.msrs;
     int ret = X86EMUL_OKAY;
 
@@ -519,7 +380,7 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
          * for backwards compatiblity, the OS should write 0 to it before
          * trying to access the current microcode version.
          */
-        if ( d->arch.cpuid->x86_vendor != X86_VENDOR_INTEL || val != 0 )
+        if ( cp->x86_vendor != X86_VENDOR_INTEL || val != 0 )
             goto gp_fault;
         break;
 
@@ -529,7 +390,7 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
          * to AMD CPUs as well (at least the architectural/CPUID part does).
          */
         if ( is_pv_domain(d) ||
-             d->arch.cpuid->x86_vendor != X86_VENDOR_AMD )
+             cp->x86_vendor != X86_VENDOR_AMD )
             goto gp_fault;
         break;
 
@@ -541,7 +402,7 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
          * by any CPUID bit.
          */
         if ( is_pv_domain(d) ||
-             d->arch.cpuid->x86_vendor != X86_VENDOR_INTEL )
+             cp->x86_vendor != X86_VENDOR_INTEL )
             goto gp_fault;
         break;
 
@@ -555,7 +416,10 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
         if ( !cp->feat.ibrsb && !cp->extd.ibpb )
             goto gp_fault; /* MSR available? */
 
-        if ( val & ~PRED_CMD_IBPB )
+        rsvd = ~(PRED_CMD_IBPB |
+                 (cp->extd.sbpb ? PRED_CMD_SBPB : 0));
+
+        if ( val & rsvd )
             goto gp_fault; /* Rsvd bit set? */
 
         if ( v == curr )
@@ -578,7 +442,7 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
         bool old_cpuid_faulting = msrs->misc_features_enables.cpuid_faulting;
 
         rsvd = ~0ull;
-        if ( mp->platform_info.cpuid_faulting )
+        if ( cp->platform_info.cpuid_faulting )
             rsvd &= ~MSR_MISC_FEATURES_CPUID_FAULTING;
 
         if ( val & rsvd )
@@ -697,7 +561,15 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
                 msrs->spec_ctrl.raw &= ~SPEC_CTRL_SSBD;
         }
         else
+        {
             msrs->virt_spec_ctrl.raw = val & SPEC_CTRL_SSBD;
+            if ( v == curr )
+                /*
+                 * Propagate the value to hardware, as it won't be set on guest
+                 * resume path.
+                 */
+                amd_set_legacy_ssbd(val & SPEC_CTRL_SSBD);
+        }
         break;
 
     case MSR_AMD64_DE_CFG:

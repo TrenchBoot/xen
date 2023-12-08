@@ -1406,6 +1406,7 @@ typedef struct {
     /* Whether this domain is being migrated/restored, or booting fresh.  Only
      * applicable to the primary domain, not support domains (e.g. stub QEMU). */
     bool restore;
+    bool soft_reset;
 } libxl__domain_build_state;
 
 _hidden void libxl__domain_build_state_init(libxl__domain_build_state *s);
@@ -4863,6 +4864,14 @@ int libxl__is_domid_recent(libxl__gc *gc, uint32_t domid, bool *recent);
 
 /* os-specific implementation of setresuid() */
 int libxl__setresuid(uid_t ruid, uid_t euid, uid_t suid);
+
+_hidden int libxl__domain_set_paging_mempool_size(
+    libxl__gc *gc, libxl_domain_config *d_config, uint32_t domid);
+
+struct libxl__cpu_policy {
+    struct xc_xend_cpuid *cpuid;
+    struct xc_msr *msr;
+};
 
 #endif
 

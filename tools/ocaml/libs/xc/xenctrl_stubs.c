@@ -67,9 +67,9 @@ static void Noreturn failwith_xc(xc_interface *xch)
 	caml_raise_with_string(*caml_named_value("xc.error"), error_str);
 }
 
-CAMLprim value stub_xc_interface_open(void)
+CAMLprim value stub_xc_interface_open(value unit)
 {
-	CAMLparam0();
+	CAMLparam1(unit);
         xc_interface *xch;
 
 	/* Don't assert XC_OPENFLAG_NON_REENTRANT because these bindings
@@ -232,22 +232,20 @@ CAMLprim value stub_xc_domain_create(value xch, value wanted_domid, value config
 
         /* Mnemonics for the named fields inside xen_x86_arch_domainconfig */
 #define VAL_EMUL_FLAGS          Field(arch_domconfig, 0)
+#define VAL_MISC_FLAGS          Field(arch_domconfig, 1)
 
 		cfg.arch.emulation_flags = ocaml_list_to_c_bitmap
 			/* ! x86_arch_emulation_flags X86_EMU_ none */
 			/* ! XEN_X86_EMU_ XEN_X86_EMU_ALL all */
 			(VAL_EMUL_FLAGS);
 
-#undef VAL_EMUL_FLAGS
-
-#define VAL_MISC_FLAGS          Field(arch_domconfig, 1)
-
 		cfg.arch.misc_flags = ocaml_list_to_c_bitmap
 			/* ! x86_arch_misc_flags X86_ none */
-			/* ! XEN_X86_ XEN_X86_MISC_FLAGS_MAX max */
+			/* ! XEN_X86_ XEN_X86_MSR_RELAXED all */
 			(VAL_MISC_FLAGS);
 
 #undef VAL_MISC_FLAGS
+#undef VAL_EMUL_FLAGS
 
 #else
 		caml_failwith("Unhandled: x86");
@@ -718,9 +716,9 @@ CAMLprim value stub_xc_send_debug_keys(value xch, value keys)
 CAMLprim value stub_xc_physinfo(value xch)
 {
 	CAMLparam1(xch);
-	CAMLlocal4(physinfo, cap_list, x86_arch_cap_list, arch_cap_list);
+	CAMLlocal4(physinfo, cap_list, arch_cap_flags, arch_cap_list);
 	xc_physinfo_t c_physinfo;
-	int r;
+	int r, arch_cap_flags_tag;
 
 	caml_enter_blocking_section();
 	r = xc_physinfo(_H(xch), &c_physinfo);
@@ -750,18 +748,16 @@ CAMLprim value stub_xc_physinfo(value xch)
 	Store_field(physinfo, 9, Val_int(c_physinfo.max_cpu_id + 1));
 
 #if defined(__i386__) || defined(__x86_64__)
-	x86_arch_cap_list = c_bitmap_to_ocaml_list
-		/* ! x86_physinfo_arch_cap_flag CAP_X86_ none */
-		/* ! XEN_SYSCTL_PHYSCAP_X86_ XEN_SYSCTL_PHYSCAP_X86_MAX max */
-		(c_physinfo.arch_capabilities);
-	/*
-	 * arch_capabilities: physinfo_arch_cap_flag list;
-	 */
-	arch_cap_list = x86_arch_cap_list;
-#else
 	arch_cap_list = Val_emptylist;
+
+	arch_cap_flags_tag = 1; /* tag x86 */
+#else
+	caml_failwith("Unhandled architecture");
 #endif
-	Store_field(physinfo, 10, arch_cap_list);
+
+	arch_cap_flags = caml_alloc_small(1, arch_cap_flags_tag);
+	Store_field(arch_cap_flags, 0, arch_cap_list);
+	Store_field(physinfo, 10, arch_cap_flags);
 
 	CAMLreturn(physinfo);
 }
@@ -957,23 +953,25 @@ CAMLprim value stub_map_foreign_range(value xch, value dom,
 	CAMLparam4(xch, dom, size, mfn);
 	CAMLlocal1(result);
 	struct mmap_interface *intf;
-	uint32_t c_dom;
-	unsigned long c_mfn;
+	unsigned long c_mfn = Nativeint_val(mfn);
+	int len = Int_val(size);
+	void *ptr;
 
-	result = caml_alloc(sizeof(struct mmap_interface), Abstract_tag);
-	intf = (struct mmap_interface *) result;
+	BUILD_BUG_ON((sizeof(struct mmap_interface) % sizeof(value)) != 0);
+	result = caml_alloc(Wsize_bsize(sizeof(struct mmap_interface)),
+			    Abstract_tag);
 
-	intf->len = Int_val(size);
-
-	c_dom = _D(dom);
-	c_mfn = Nativeint_val(mfn);
 	caml_enter_blocking_section();
-	intf->addr = xc_map_foreign_range(_H(xch), c_dom,
-	                                  intf->len, PROT_READ|PROT_WRITE,
-	                                  c_mfn);
+	ptr = xc_map_foreign_range(_H(xch), _D(dom), len,
+				   PROT_READ|PROT_WRITE, c_mfn);
 	caml_leave_blocking_section();
-	if (!intf->addr)
+
+	if (!ptr)
 		caml_failwith("xc_map_foreign_range error");
+
+	intf = Data_abstract_val(result);
+	*intf = (struct mmap_interface){ ptr, len };
+
 	CAMLreturn(result);
 }
 
@@ -1140,17 +1138,12 @@ CAMLprim value stub_xc_domain_test_assign_device(value xch, value domid, value d
 	CAMLreturn(Val_bool(ret == 0));
 }
 
-static int domain_assign_device_rdm_flag_table[] = {
-    XEN_DOMCTL_DEV_RDM_RELAXED,
-};
-
-CAMLprim value stub_xc_domain_assign_device(value xch, value domid, value desc,
-                                            value rflag)
+CAMLprim value stub_xc_domain_assign_device(value xch, value domid, value desc)
 {
-	CAMLparam4(xch, domid, desc, rflag);
+	CAMLparam3(xch, domid, desc);
 	int ret;
 	int domain, bus, dev, func;
-	uint32_t sbdf, flag;
+	uint32_t sbdf;
 
 	domain = Int_val(Field(desc, 0));
 	bus = Int_val(Field(desc, 1));
@@ -1158,10 +1151,8 @@ CAMLprim value stub_xc_domain_assign_device(value xch, value domid, value desc,
 	func = Int_val(Field(desc, 3));
 	sbdf = encode_sbdf(domain, bus, dev, func);
 
-	ret = Int_val(Field(rflag, 0));
-	flag = domain_assign_device_rdm_flag_table[ret];
-
-	ret = xc_assign_device(_H(xch), _D(domid), sbdf, flag);
+	ret = xc_assign_device(_H(xch), _D(domid), sbdf,
+			       XEN_DOMCTL_DEV_RDM_RELAXED);
 
 	if (ret < 0)
 		failwith_xc(_H(xch));

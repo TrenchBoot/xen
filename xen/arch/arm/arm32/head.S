@@ -49,20 +49,16 @@
 .endm
 
 /*
- * There are no easy way to have a PC relative address within the range
- * +/- 4GB of the PC.
+ * Pseudo-op for PC relative adr <reg>, <symbol> where <symbol> is
+ * within the range +/- 4GB of the PC.
  *
- * This macro workaround it by asking the user to tell whether the MMU
- * has been turned on or not.
- *
- * When the MMU is turned off, we need to apply the physical offset
- * (r10) in order to find the associated physical address.
+ * @dst: destination register
+ * @sym: name of the symbol
  */
-.macro adr_l, dst, sym, mmu
-        ldr   \dst, =\sym
-        .if \mmu == 0
-        add   \dst, \dst, r10
-        .endif
+.macro adr_l, dst, sym
+        mov_w \dst, \sym - .Lpc\@
+        .set  .Lpc\@, .+ 8          /* PC bias */
+        add   \dst, \dst, pc
 .endm
 
 .macro load_paddr rb, sym
@@ -97,13 +93,10 @@
  */
 #define PRINT(_s)           \
         mov   r3, lr       ;\
-        adr   r0, 98f      ;\
+        adr_l r0, 98f      ;\
         bl    puts         ;\
         mov   lr, r3       ;\
-        b     99f          ;\
-98:     .asciz _s          ;\
-        .align 2           ;\
-99:
+        RODATA_STR(98, _s)
 
 /*
  * Macro to print the value of register \rb
@@ -359,13 +352,30 @@ cpu_init_done:
 ENDPROC(cpu_init)
 
 /*
+ * Macro to find the slot number at a given page-table level
+ *
+ * slot:     slot computed
+ * virt:     virtual address
+ * lvl:      page-table level
+ *
+ * Note that ubxf is unpredictable when the end bit is above 32-bit. So we
+ * can't use it for first level offset.
+ */
+.macro get_table_slot, slot, virt, lvl
+    .if \lvl == 1
+        lsr   \slot, \virt, #XEN_PT_LEVEL_SHIFT(\lvl)
+    .else
+        ubfx  \slot, \virt, #XEN_PT_LEVEL_SHIFT(\lvl), #XEN_PT_LPAE_SHIFT
+    .endif
+.endm
+
+/*
  * Macro to create a page table entry in \ptbl to \tbl
  *
  * ptbl:    table symbol where the entry will be created
  * tbl:     table symbol to point to
  * virt:    virtual address
- * shift:   #imm page table shift
- * mmu:     Is the MMU turned on/off. If not specified it will be off
+ * lvl:     page-table level
  *
  * Preserves \virt
  * Clobbers r1 - r4
@@ -374,11 +384,9 @@ ENDPROC(cpu_init)
  *
  * Note that \virt should be in a register other than r1 - r4
  */
-.macro create_table_entry, ptbl, tbl, virt, shift, mmu=0
-        lsr   r1, \virt, #\shift
-        mov_w r2, XEN_PT_LPAE_ENTRY_MASK
-        and   r1, r1, r2             /* r1 := slot in \tlb */
-        lsl   r1, r1, #3             /* r1 := slot offset in \tlb */
+.macro create_table_entry, ptbl, tbl, virt, lvl
+        get_table_slot r1, \virt, \lvl  /* r1 := slot in \tlb */
+        lsl   r1, r1, #3                /* r1 := slot offset in \tlb */
 
         load_paddr r4, \tbl
 
@@ -386,7 +394,7 @@ ENDPROC(cpu_init)
         orr   r2, r2, r4             /*           + \tlb paddr */
         mov   r3, #0
 
-        adr_l r4, \ptbl, \mmu
+        adr_l r4, \ptbl
 
         strd  r2, r3, [r4, r1]
 .endm
@@ -399,17 +407,14 @@ ENDPROC(cpu_init)
  * virt:    virtual address
  * phys:    physical address
  * type:    mapping type. If not specified it will be normal memory (PT_MEM_L3)
- * mmu:     Is the MMU turned on/off. If not specified it will be off
  *
  * Preserves \virt, \phys
  * Clobbers r1 - r4
  *
- * * Also use r10 for the phys offset.
- *
  * Note that \virt and \paddr should be in other registers than r1 - r4
  * and be distinct.
  */
-.macro create_mapping_entry, ptbl, virt, phys, type=PT_MEM_L3, mmu=0
+.macro create_mapping_entry, ptbl, virt, phys, type=PT_MEM_L3
         mov_w r2, XEN_PT_LPAE_ENTRY_MASK
         lsr   r1, \virt, #THIRD_SHIFT
         and   r1, r1, r2             /* r1 := slot in \tlb */
@@ -422,7 +427,7 @@ ENDPROC(cpu_init)
         orr   r2, r2, r4             /*          + PAGE_ALIGNED(phys) */
         mov   r3, #0
 
-        adr_l r4, \ptbl, \mmu
+        adr_l r4, \ptbl
 
         strd  r2, r3, [r4, r1]
 .endm
@@ -448,11 +453,11 @@ ENDPROC(cpu_init)
 create_page_tables:
         /* Prepare the page-tables for mapping Xen */
         ldr   r0, =XEN_VIRT_START
-        create_table_entry boot_pgtable, boot_second, r0, FIRST_SHIFT
-        create_table_entry boot_second, boot_third, r0, SECOND_SHIFT
+        create_table_entry boot_pgtable, boot_second, r0, 1
+        create_table_entry boot_second, boot_third, r0, 2
 
         /* Setup boot_third: */
-        adr_l r4, boot_third, mmu=0
+        adr_l r4, boot_third
 
         lsr   r2, r9, #THIRD_SHIFT  /* Base address for 4K mapping */
         lsl   r2, r2, #THIRD_SHIFT
@@ -486,12 +491,10 @@ create_page_tables:
          * then the 1:1 mapping will use its own set of page-tables from
          * the second level.
          */
-        lsr   r1, r9, #FIRST_SHIFT
-        mov_w r0, XEN_PT_LPAE_ENTRY_MASK
-        and   r1, r1, r0              /* r1 := first slot */
+        get_table_slot r1, r9, 1     /* r1 := first slot */
         cmp   r1, #XEN_FIRST_SLOT
         beq   1f
-        create_table_entry boot_pgtable, boot_second_id, r9, FIRST_SHIFT
+        create_table_entry boot_pgtable, boot_second_id, r9, 1
         b     link_from_second_id
 
 1:
@@ -501,16 +504,14 @@ create_page_tables:
          * third level. For slot XEN_SECOND_SLOT, Xen is not yet able to handle
          * it.
          */
-        lsr   r1, r9, #SECOND_SHIFT
-        mov_w r0, XEN_PT_LPAE_ENTRY_MASK
-        and   r1, r1, r0             /* r1 := second slot */
+        get_table_slot r1, r9, 2     /* r1 := second slot */
         cmp   r1, #XEN_SECOND_SLOT
         beq   virtphys_clash
-        create_table_entry boot_second, boot_third_id, r9, SECOND_SHIFT
+        create_table_entry boot_second, boot_third_id, r9, 2
         b     link_from_third_id
 
 link_from_second_id:
-        create_table_entry boot_second_id, boot_third_id, r9, SECOND_SHIFT
+        create_table_entry boot_second_id, boot_third_id, r9, 2
 link_from_third_id:
         create_mapping_entry boot_third_id, r9, r9
         mov   pc, lr
@@ -571,9 +572,7 @@ remove_identity_mapping:
          * Find the first slot used. Remove the entry for the first
          * table if the slot is not XEN_FIRST_SLOT.
          */
-        lsr   r1, r9, #FIRST_SHIFT
-        mov_w r0, XEN_PT_LPAE_ENTRY_MASK
-        and   r1, r1, r0              /* r1 := first slot */
+        get_table_slot r1, r9, 1     /* r1 := first slot */
         cmp   r1, #XEN_FIRST_SLOT
         beq   1f
         /* It is not in slot 0, remove the entry */
@@ -587,9 +586,7 @@ remove_identity_mapping:
          * Find the second slot used. Remove the entry for the first
          * table if the slot is not XEN_SECOND_SLOT.
          */
-        lsr   r1, r9, #SECOND_SHIFT
-        mov_w r0, XEN_PT_LPAE_ENTRY_MASK
-        and   r1, r1, r0             /* r1 := second slot */
+        get_table_slot r1, r9, 2     /* r1 := second slot */
         cmp   r1, #XEN_SECOND_SLOT
         beq   identity_mapping_removed
         /* It is not in slot 1, remove the entry */
@@ -624,11 +621,11 @@ setup_fixmap:
 #if defined(CONFIG_EARLY_PRINTK)
         /* Add UART to the fixmap table */
         ldr   r0, =EARLY_UART_VIRTUAL_ADDRESS
-        create_mapping_entry xen_fixmap, r0, r11, type=PT_DEV_L3, mmu=1
+        create_mapping_entry xen_fixmap, r0, r11, type=PT_DEV_L3
 #endif
         /* Map fixmap into boot_second */
         mov_w r0, FIXMAP_ADDR(0)
-        create_table_entry boot_second, xen_fixmap, r0, SECOND_SHIFT, mmu=1
+        create_table_entry boot_second, xen_fixmap, r0, 2
         /* Ensure any page table updates made above have occurred. */
         dsb   nshst
 
@@ -736,7 +733,7 @@ ENDPROC(puts)
  * Clobbers r0-r3
  */
 putn:
-        adr   r1, hex
+        adr_l r1, hex
         mov   r3, #8
 1:
         early_uart_ready r11, r2
@@ -749,8 +746,7 @@ putn:
         mov   pc, lr
 ENDPROC(putn)
 
-hex:    .ascii "0123456789abcdef"
-        .align 2
+RODATA_STR(hex, "0123456789abcdef")
 
 #else  /* CONFIG_EARLY_PRINTK */
 

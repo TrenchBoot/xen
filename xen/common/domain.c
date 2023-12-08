@@ -604,6 +604,10 @@ struct domain *domain_create(domid_t domid,
     INIT_PAGE_LIST_HEAD(&d->page_list);
     INIT_PAGE_LIST_HEAD(&d->extra_page_list);
     INIT_PAGE_LIST_HEAD(&d->xenpage_list);
+#ifdef CONFIG_STATIC_MEMORY
+    INIT_PAGE_LIST_HEAD(&d->resv_page_list);
+#endif
+
 
     spin_lock_init(&d->node_affinity_lock);
     d->node_affinity = NODE_MASK_ALL;
@@ -783,6 +787,9 @@ void __init setup_system_domains(void)
      * This domain owns I/O pages that are within the range of the page_info
      * array. Mappings occur at the priv of the caller.
      * Quarantined PCI devices will be associated with this domain.
+     *
+     * DOMID_IO is also the default owner of memory pre-shared among multiple
+     * domains at boot time.
      */
     dom_io = domain_create(DOMID_IO, NULL, 0);
     if ( IS_ERR(dom_io) )
@@ -1477,7 +1484,7 @@ int map_vcpu_info(struct vcpu *v, unsigned long gfn, unsigned int offset)
     if ( (v != current) && !(v->pause_flags & VPF_down) )
         return -EINVAL;
 
-    page = get_page_from_gfn(d, gfn, NULL, P2M_ALLOC);
+    page = get_page_from_gfn(d, gfn, NULL, P2M_UNSHARE);
     if ( !page )
         return -EINVAL;
 

@@ -1,5 +1,6 @@
 -include $(XEN_ROOT)/config/Paths.mk
 
+CONFIG_WERROR       := @werror@
 CONFIG_RUMP         := @CONFIG_RUMP@
 ifeq ($(CONFIG_RUMP),y)
 XEN_OS              := NetBSDRump
@@ -29,8 +30,6 @@ APPEND_LIB          := @APPEND_LIB@
 PTHREAD_CFLAGS      := @PTHREAD_CFLAGS@
 PTHREAD_LDFLAGS     := @PTHREAD_LDFLAGS@
 PTHREAD_LIBS        := @PTHREAD_LIBS@
-
-PTYFUNCS_LIBS       := @PTYFUNCS_LIBS@
 
 LIBNL3_LIBS         := @LIBNL3_LIBS@
 LIBNL3_CFLAGS       := @LIBNL3_CFLAGS@

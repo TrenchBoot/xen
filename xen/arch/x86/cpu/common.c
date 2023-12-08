@@ -3,6 +3,8 @@
 #include <xen/delay.h>
 #include <xen/param.h>
 #include <xen/smp.h>
+
+#include <asm/cpu-policy.h>
 #include <asm/current.h>
 #include <asm/debugreg.h>
 #include <asm/processor.h>
@@ -70,7 +72,7 @@ void __init setup_clear_cpu_cap(unsigned int cap)
 		       __builtin_return_address(0), cap);
 
 	__clear_bit(cap, boot_cpu_data.x86_capability);
-	dfs = x86_cpuid_lookup_deep_deps(cap);
+	dfs = x86_cpu_policy_lookup_deep_deps(cap);
 
 	if (!dfs)
 		return;
@@ -138,7 +140,7 @@ bool __init probe_cpuid_faulting(void)
 		return false;
 
 	if ((rc = rdmsr_safe(MSR_INTEL_PLATFORM_INFO, val)) == 0)
-		raw_msr_policy.platform_info.cpuid_faulting =
+		raw_cpu_policy.platform_info.cpuid_faulting =
 			val & MSR_PLATFORM_INFO_CPUID_FAULTING;
 
 	if (rc ||
@@ -346,10 +348,17 @@ void __init early_cpu_init(void)
 	       x86_cpuid_vendor_to_str(c->x86_vendor), c->x86, c->x86,
 	       c->x86_model, c->x86_model, c->x86_mask, eax);
 
-	if (c->cpuid_level >= 7)
-		cpuid_count(7, 0, &eax, &ebx,
+	if (c->cpuid_level >= 7) {
+		uint32_t max_subleaf;
+
+		cpuid_count(7, 0, &max_subleaf, &ebx,
 			    &c->x86_capability[FEATURESET_7c0],
 			    &c->x86_capability[FEATURESET_7d0]);
+
+		if (max_subleaf >= 1)
+			cpuid_count(7, 1, &eax, &ebx, &ecx,
+				    &c->x86_capability[FEATURESET_7d1]);
+	}
 
 	eax = cpuid_eax(0x80000000);
 	if ((eax >> 16) == 0x8000 && eax >= 0x80000008) {
@@ -450,7 +459,8 @@ static void generic_identify(struct cpuinfo_x86 *c)
 			cpuid_count(7, 1,
 				    &c->x86_capability[FEATURESET_7a1],
 				    &c->x86_capability[FEATURESET_7b1],
-				    &tmp, &tmp);
+				    &c->x86_capability[FEATURESET_7c1],
+				    &c->x86_capability[FEATURESET_7d1]);
 		if (max_subleaf >= 2)
 			cpuid_count(7, 2,
 				    &tmp, &tmp, &tmp,
@@ -461,6 +471,11 @@ static void generic_identify(struct cpuinfo_x86 *c)
 		cpuid_count(0xd, 1,
 			    &c->x86_capability[FEATURESET_Da1],
 			    &tmp, &tmp, &tmp);
+
+	if (test_bit(X86_FEATURE_ARCH_CAPS, c->x86_capability))
+		rdmsr(MSR_ARCH_CAPABILITIES,
+		      c->x86_capability[FEATURESET_m10Al],
+		      c->x86_capability[FEATURESET_m10Ah]);
 }
 
 /*

@@ -50,8 +50,6 @@ type x86_arch_emulation_flags =
 
 type x86_arch_misc_flags =
 	| X86_MSR_RELAXED
-	| X86_ASSISTED_XAPIC
-	| X86_ASSISTED_X2APIC
 
 type xen_x86_arch_domainconfig =
 {
@@ -130,13 +128,13 @@ type physinfo_cap_flag =
 	| CAP_Gnttab_v1
 	| CAP_Gnttab_v2
 
+type arm_physinfo_cap_flag
 
-type x86_physinfo_arch_cap_flag =
-	| CAP_X86_ASSISTED_XAPIC
-	| CAP_X86_ASSISTED_X2APIC
+type x86_physinfo_cap_flag
 
-type physinfo_arch_cap_flag =
-	| X86 of x86_physinfo_arch_cap_flag
+type arch_physinfo_cap_flags =
+	| ARM of arm_physinfo_cap_flag list
+	| X86 of x86_physinfo_cap_flag list
 
 type physinfo =
 {
@@ -151,7 +149,7 @@ type physinfo =
 	(* XXX hw_cap *)
 	capabilities     : physinfo_cap_flag list;
 	max_nr_cpus      : int;
-	arch_capabilities : physinfo_arch_cap_flag list;
+	arch_capabilities : arch_physinfo_cap_flags;
 }
 
 type version =
@@ -224,14 +222,25 @@ external domain_shutdown: handle -> domid -> shutdown_reason -> unit
 external _domain_getinfolist: handle -> domid -> int -> domaininfo list
        = "stub_xc_domain_getinfolist"
 
+let rev_append_fold acc e = List.rev_append e acc
+
+(**
+ * [rev_concat lst] is equivalent to [lst |> List.concat |> List.rev]
+ * except it is tail recursive, whereas [List.concat] isn't.
+ * Example:
+ * rev_concat [[10;9;8];[7;6];[5]]] = [5; 6; 7; 8; 9; 10]
+ *)
+let rev_concat lst = List.fold_left rev_append_fold [] lst
+
 let domain_getinfolist handle first_domain =
-	let nb = 2 in
-	let last_domid l = (List.hd l).domid + 1 in
-	let rec __getlist from =
-		let l = _domain_getinfolist handle from nb in
-		(if List.length l = nb then __getlist (last_domid l) else []) @ l
-		in
-	List.rev (__getlist first_domain)
+	let nb = 1024 in
+	let rec __getlist lst from =
+		(* _domain_getinfolist returns domains in reverse order, largest first *)
+		match _domain_getinfolist handle from nb with
+		| [] -> rev_concat lst
+		| (hd :: _) as l -> __getlist (l :: lst) (hd.domid + 1)
+	in
+	__getlist [] first_domain
 
 external domain_getinfo: handle -> domid -> domaininfo= "stub_xc_domain_getinfo"
 
@@ -300,7 +309,13 @@ external version_changeset: handle -> string = "stub_xc_version_changeset"
 external version_capabilities: handle -> string =
   "stub_xc_version_capabilities"
 
-type featureset_index = Featureset_raw | Featureset_host | Featureset_pv | Featureset_hvm
+type featureset_index =
+  | Featureset_raw
+  | Featureset_host
+  | Featureset_pv
+  | Featureset_hvm
+  | Featureset_pv_max
+  | Featureset_hvm_max
 external get_cpu_featureset : handle -> featureset_index -> int64 array = "stub_xc_get_cpu_featureset"
 
 external watchdog : handle -> int -> int32 -> int

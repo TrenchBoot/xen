@@ -324,7 +324,7 @@ static inline int sh_page_has_multiple_shadows(struct page_info *pg)
         return 0;
     shadows = pg->shadow_flags & SHF_page_type_mask;
     /* More than one type bit set in shadow-flags? */
-    return ( (shadows & ~(1UL << find_first_set_bit(shadows))) != 0 );
+    return shadows && (shadows & (shadows - 1));
 }
 
 #if (SHADOW_OPTIMIZATIONS & SHOPT_OUT_OF_SYNC)
@@ -383,7 +383,8 @@ void shadow_promote(struct domain *d, mfn_t gmfn, u32 type);
 void shadow_demote(struct domain *d, mfn_t gmfn, u32 type);
 
 /* Shadow page allocation functions */
-void  shadow_prealloc(struct domain *d, u32 shadow_type, unsigned int count);
+bool __must_check shadow_prealloc(struct domain *d, unsigned int shadow_type,
+                                  unsigned int count);
 mfn_t shadow_alloc(struct domain *d,
                     u32 shadow_type,
                     unsigned long backpointer);

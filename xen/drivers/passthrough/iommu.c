@@ -598,7 +598,7 @@ int __init iommu_setup(void)
     return rc;
 }
 
-int iommu_suspend()
+int iommu_suspend(void)
 {
     if ( iommu_enabled )
         return iommu_call(iommu_get_ops(), suspend);
@@ -606,7 +606,7 @@ int iommu_suspend()
     return 0;
 }
 
-void iommu_resume()
+void iommu_resume(void)
 {
     if ( iommu_enabled )
         iommu_vcall(iommu_get_ops(), resume);
@@ -667,6 +667,52 @@ int iommu_get_reserved_device_memory(iommu_grdm_t *func, void *ctxt)
 bool_t iommu_has_feature(struct domain *d, enum iommu_feature feature)
 {
     return is_iommu_enabled(d) && test_bit(feature, dom_iommu(d)->features);
+}
+
+#define MAX_EXTRA_RESERVED_RANGES 20
+struct extra_reserved_range {
+    unsigned long start;
+    unsigned long nr;
+    pci_sbdf_t sbdf;
+};
+static unsigned int __initdata nr_extra_reserved_ranges;
+static struct extra_reserved_range __initdata
+    extra_reserved_ranges[MAX_EXTRA_RESERVED_RANGES];
+
+int __init iommu_add_extra_reserved_device_memory(unsigned long start,
+                                                  unsigned long nr,
+                                                  pci_sbdf_t sbdf)
+{
+    unsigned int idx;
+
+    if ( nr_extra_reserved_ranges >= MAX_EXTRA_RESERVED_RANGES )
+        return -ENOMEM;
+
+    idx = nr_extra_reserved_ranges++;
+    extra_reserved_ranges[idx].start = start;
+    extra_reserved_ranges[idx].nr = nr;
+    extra_reserved_ranges[idx].sbdf = sbdf;
+
+    return 0;
+}
+
+int __init iommu_get_extra_reserved_device_memory(iommu_grdm_t *func,
+                                                  void *ctxt)
+{
+    unsigned int idx;
+    int ret;
+
+    for ( idx = 0; idx < nr_extra_reserved_ranges; idx++ )
+    {
+        ret = func(extra_reserved_ranges[idx].start,
+                   extra_reserved_ranges[idx].nr,
+                   extra_reserved_ranges[idx].sbdf.sbdf,
+                   ctxt);
+        if ( ret < 0 )
+            return ret;
+    }
+
+    return 0;
 }
 
 /*

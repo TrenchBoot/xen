@@ -50,13 +50,37 @@ def parse_definitions(state):
         "\s+([\s\d]+\*[\s\d]+\+[\s\d]+)\)"
         "\s+/\*([\w!]*) .*$")
 
+    word_regex = re.compile(
+        r"^/\* .* word (\d*) \*/$")
+    last_word = -1
+
     this = sys.modules[__name__]
 
     for l in state.input.readlines():
-        # Short circuit the regex...
-        if not l.startswith("XEN_CPUFEATURE("):
+
+        # Short circuit the regexes...
+        if not (l.startswith("XEN_CPUFEATURE(") or
+                l.startswith("/* ")):
             continue
 
+        # Handle /* ... word $N */ lines
+        if l.startswith("/* "):
+
+            res = word_regex.match(l)
+            if res is None:
+                continue # Some other comment
+
+            word = int(res.groups()[0])
+
+            if word != last_word + 1:
+                raise Fail("Featureset word %u out of order (last word %u)"
+                           % (word, last_word))
+
+            last_word = word
+            state.nr_entries = word + 1
+            continue
+
+        # Handle XEN_CPUFEATURE( lines
         res = feat_regex.match(l)
 
         if res is None:
@@ -94,6 +118,15 @@ def parse_definitions(state):
     if len(state.names) == 0:
         raise Fail("No features found")
 
+    if state.nr_entries == 0:
+        raise Fail("No featureset word info found")
+
+    max_val = max(state.names.keys())
+    if (max_val >> 5) >= state.nr_entries:
+        max_name = state.names[max_val]
+        raise Fail("Feature %s (%d*32+%d) exceeds FEATURESET_NR_ENTRIES (%d)"
+                   % (max_name, max_val >> 5, max_val & 31, state.nr_entries))
+
 def featureset_to_uint32s(fs, nr):
     """ Represent a featureset as a list of C-compatible uint32_t's """
 
@@ -121,9 +154,6 @@ def format_uint32s(state, featureset, indent):
 
 
 def crunch_numbers(state):
-
-    # Size of bitmaps
-    state.nr_entries = nr_entries = (max(state.names.keys()) >> 5) + 1
 
     # Features common between 1d and e1d.
     common_1d = (FPU, VME, DE, PSE, TSC, MSR, PAE, MCE, CX8, APIC,
@@ -288,13 +318,20 @@ def crunch_numbers(state):
         # IBRSB/IBRS, and we pass this MSR directly to guests.  Treating them
         # as dependent features simplifies Xen's logic, and prevents the guest
         # from seeing implausible configurations.
-        IBRSB: [STIBP, SSBD, INTEL_PSFD],
+        IBRSB: [STIBP, SSBD, INTEL_PSFD, EIBRS],
         IBRS: [AMD_STIBP, AMD_SSBD, PSFD,
                IBRS_ALWAYS, IBRS_FAST, IBRS_SAME_MODE],
+        IBPB: [IBPB_RET, SBPB, IBPB_BRTYPE],
         AMD_STIBP: [STIBP_ALWAYS],
 
         # In principle the TSXLDTRK insns could also be considered independent.
         RTM: [TSXLDTRK],
+
+        # The ARCH_CAPS CPUID bit enumerates the availability of the whole register.
+        ARCH_CAPS: list(range(RDCL_NO, RDCL_NO + 64)),
+
+        # The behaviour described by RRSBA depend on eIBRS being active.
+        EIBRS: [RRSBA],
     }
 
     deep_features = tuple(sorted(deps.keys()))
@@ -328,7 +365,7 @@ def crunch_numbers(state):
     state.nr_deep_deps = len(state.deep_deps.keys())
 
     # Calculate the bitfield name declarations
-    for word in range(nr_entries):
+    for word in range(state.nr_entries):
 
         names = []
         for bit in range(32):

@@ -88,6 +88,12 @@ struct vpci {
          * is mapped into guest p2m) if there's a ROM BAR on the device.
          */
         bool rom_enabled      : 1;
+        /*
+         * Cache whether memory decoding is enabled from our PoV.
+         * Some devices have a sticky memory decoding so that can't be relied
+         * upon to know whether BARs are mapped into the guest p2m.
+         */
+        bool bars_mapped      : 1;
         /* FIXME: currently there's no support for SR-IOV. */
     } header;
 
@@ -127,8 +133,12 @@ struct vpci {
         bool enabled         : 1;
         /* Masked? */
         bool masked          : 1;
-        /* PBA map */
-        void __iomem *pba;
+        /* Partial table map. */
+#define VPCI_MSIX_TBL_HEAD 0
+#define VPCI_MSIX_TBL_TAIL 1
+#define VPCI_MSIX_PBA_HEAD 2
+#define VPCI_MSIX_PBA_TAIL 3
+        void __iomem *table[4];
         /* Entries. */
         struct vpci_msix_entry {
             uint64_t addr;

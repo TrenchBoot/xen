@@ -1923,7 +1923,7 @@ in_protmode(
 }
 
 static bool
-_amd_like(const struct cpuid_policy *cp)
+_amd_like(const struct cpu_policy *cp)
 {
     return cp->x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON);
 }
@@ -1931,7 +1931,7 @@ _amd_like(const struct cpuid_policy *cp)
 static bool
 amd_like(const struct x86_emulate_ctxt *ctxt)
 {
-    return _amd_like(ctxt->cpuid);
+    return _amd_like(ctxt->cpu_policy);
 }
 
 #define vcpu_has_fpu()         (ctxt->cpuid->basic.fpu)
@@ -1970,6 +1970,7 @@ amd_like(const struct x86_emulate_ctxt *ctxt)
 #define vcpu_has_tbm()         (ctxt->cpuid->extd.tbm)
 #define vcpu_has_clzero()      (ctxt->cpuid->extd.clzero)
 #define vcpu_has_wbnoinvd()    (ctxt->cpuid->extd.wbnoinvd)
+#define vcpu_has_nscb()        (ctxt->cpuid->extd.nscb)
 
 #define vcpu_has_bmi1()        (ctxt->cpuid->feat.bmi1)
 #define vcpu_has_hle()         (ctxt->cpuid->feat.hle)
@@ -2077,7 +2078,7 @@ protmode_load_seg(
     struct x86_emulate_ctxt *ctxt,
     const struct x86_emulate_ops *ops)
 {
-    const struct cpuid_policy *cp = ctxt->cpuid;
+    const struct cpu_policy *cp = ctxt->cpu_policy;
     enum x86_segment sel_seg = (sel & 4) ? x86_seg_ldtr : x86_seg_gdtr;
     struct { uint32_t a, b; } desc, desc_hi = {};
     uint8_t dpl, rpl;
@@ -2102,7 +2103,7 @@ protmode_load_seg(
         case x86_seg_tr:
             goto raise_exn;
         }
-        if ( !_amd_like(cp) || !ops->read_segment ||
+        if ( !_amd_like(cp) || vcpu_has_nscb() || !ops->read_segment ||
              ops->read_segment(seg, sreg, ctxt) != X86EMUL_OKAY )
             memset(sreg, 0, sizeof(*sreg));
         else
@@ -4248,14 +4249,15 @@ x86_emulate(
         goto imul;
 
     case 0x6c ... 0x6d: /* ins %dx,%es:%edi */ {
-        unsigned long nr_reps = get_rep_prefix(false, true);
+        unsigned long nr_reps;
         unsigned int port = _regs.dx;
 
         dst.bytes = !(b & 1) ? 1 : (op_bytes == 8) ? 4 : op_bytes;
-        dst.mem.seg = x86_seg_es;
-        dst.mem.off = truncate_ea_and_reps(_regs.r(di), nr_reps, dst.bytes);
         if ( (rc = ioport_access_check(port, dst.bytes, ctxt, ops)) != 0 )
             goto done;
+        nr_reps = get_rep_prefix(false, true);
+        dst.mem.off = truncate_ea_and_reps(_regs.r(di), nr_reps, dst.bytes);
+        dst.mem.seg = x86_seg_es;
         /* Try the presumably most efficient approach first. */
         if ( !ops->rep_ins )
             nr_reps = 1;
@@ -4289,13 +4291,14 @@ x86_emulate(
     }
 
     case 0x6e ... 0x6f: /* outs %esi,%dx */ {
-        unsigned long nr_reps = get_rep_prefix(true, false);
+        unsigned long nr_reps;
         unsigned int port = _regs.dx;
 
         dst.bytes = !(b & 1) ? 1 : (op_bytes == 8) ? 4 : op_bytes;
-        ea.mem.off = truncate_ea_and_reps(_regs.r(si), nr_reps, dst.bytes);
         if ( (rc = ioport_access_check(port, dst.bytes, ctxt, ops)) != 0 )
             goto done;
+        nr_reps = get_rep_prefix(true, false);
+        ea.mem.off = truncate_ea_and_reps(_regs.r(si), nr_reps, dst.bytes);
         /* Try the presumably most efficient approach first. */
         if ( !ops->rep_outs )
             nr_reps = 1;

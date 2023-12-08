@@ -65,6 +65,28 @@
 void init_speculation_mitigations(void);
 void spec_ctrl_init_domain(struct domain *d);
 
+/*
+ * Switch to a new guest prediction context.
+ *
+ * This flushes all indirect branch predictors (BTB, RSB/RAS), so guest code
+ * which has previously run on this CPU can't attack subsequent guest code.
+ *
+ * As this flushes the RSB/RAS, it destroys the predictions of the calling
+ * context.  For best performace, arrange for this to be used when we're going
+ * to jump out of the current context, e.g. with reset_stack_and_jump().
+ *
+ * For hardware which mis-implements IBPB, fix up by flushing the RSB/RAS
+ * manually.
+ */
+static always_inline void spec_ctrl_new_guest_context(void)
+{
+    wrmsrl(MSR_PRED_CMD, PRED_CMD_IBPB);
+
+    /* (ab)use alternative_input() to specify clobbers. */
+    alternative_input("", "DO_OVERWRITE_RSB xu=%=", X86_BUG_IBPB_NO_RET,
+                      : "rax", "rcx");
+}
+
 extern int8_t opt_ibpb_ctxt_switch;
 extern bool opt_ssbd;
 extern int8_t opt_eager_fpu;
@@ -137,6 +159,21 @@ static always_inline void spec_ctrl_enter_idle(struct cpu_info *info)
      */
     alternative_input("", "verw %[sel]", X86_FEATURE_SC_VERW_IDLE,
                       [sel] "m" (info->verw_sel));
+
+    /*
+     * Cross-Thread Return Address Predictions:
+     *
+     * On vulnerable systems, the return predictions (RSB/RAS) are statically
+     * partitioned between active threads.  When entering idle, our entries
+     * are re-partitioned to allow the other threads to use them.
+     *
+     * In some cases, we might still have guest entries in the RAS, so flush
+     * them before injecting them sideways to our sibling thread.
+     *
+     * (ab)use alternative_input() to specify clobbers.
+     */
+    alternative_input("", "DO_OVERWRITE_RSB xu=%=", X86_FEATURE_SC_RSB_IDLE,
+                      : "rax", "rcx");
 }
 
 /* WARNING! `ret`, `call *`, `jmp *` not safe before this call. */

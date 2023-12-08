@@ -31,38 +31,7 @@
 #include <xen/cpu.h>
 #include <xsm/xsm.h>
 #include <asm/psr.h>
-#include <asm/cpuid.h>
-
-const struct cpu_policy system_policies[6] = {
-    [ XEN_SYSCTL_cpu_policy_raw ] = {
-        &raw_cpuid_policy,
-        &raw_msr_policy,
-    },
-    [ XEN_SYSCTL_cpu_policy_host ] = {
-        &host_cpuid_policy,
-        &host_msr_policy,
-    },
-#ifdef CONFIG_PV
-    [ XEN_SYSCTL_cpu_policy_pv_max ] = {
-        &pv_max_cpuid_policy,
-        &pv_max_msr_policy,
-    },
-    [ XEN_SYSCTL_cpu_policy_pv_default ] = {
-        &pv_def_cpuid_policy,
-        &pv_def_msr_policy,
-    },
-#endif
-#ifdef CONFIG_HVM
-    [ XEN_SYSCTL_cpu_policy_hvm_max ] = {
-        &hvm_max_cpuid_policy,
-        &hvm_max_msr_policy,
-    },
-    [ XEN_SYSCTL_cpu_policy_hvm_default ] = {
-        &hvm_def_cpuid_policy,
-        &hvm_def_msr_policy,
-    },
-#endif
-};
+#include <asm/cpu-policy.h>
 
 struct l3_cache_info {
     int ret;
@@ -135,10 +104,6 @@ void arch_do_physinfo(struct xen_sysctl_physinfo *pi)
         pi->capabilities |= XEN_SYSCTL_PHYSCAP_hap;
     if ( IS_ENABLED(CONFIG_SHADOW_PAGING) )
         pi->capabilities |= XEN_SYSCTL_PHYSCAP_shadow;
-    if ( assisted_xapic_available )
-        pi->arch_capabilities |= XEN_SYSCTL_PHYSCAP_X86_ASSISTED_XAPIC;
-    if ( assisted_x2apic_available )
-        pi->arch_capabilities |= XEN_SYSCTL_PHYSCAP_X86_ASSISTED_X2APIC;
 }
 
 long arch_do_sysctl(
@@ -183,6 +148,9 @@ long arch_do_sysctl(
                 ret = -EBUSY;
                 break;
             }
+            if ( CONFIG_NR_CPUS <= 1 )
+                /* Mimic behavior of smt_up_down_helper(). */
+                return 0;
             plug = op == XEN_SYSCTL_CPU_HOTPLUG_SMT_ENABLE;
             fn = smt_up_down_helper;
             hcpu = _p(plug);
@@ -328,17 +296,19 @@ long arch_do_sysctl(
 
     case XEN_SYSCTL_get_cpu_featureset:
     {
-        static const struct cpuid_policy *const policy_table[4] = {
-            [XEN_SYSCTL_cpu_featureset_raw]  = &raw_cpuid_policy,
-            [XEN_SYSCTL_cpu_featureset_host] = &host_cpuid_policy,
+        static const struct cpu_policy *const policy_table[6] = {
+            [XEN_SYSCTL_cpu_featureset_raw]  = &raw_cpu_policy,
+            [XEN_SYSCTL_cpu_featureset_host] = &host_cpu_policy,
 #ifdef CONFIG_PV
-            [XEN_SYSCTL_cpu_featureset_pv]   = &pv_def_cpuid_policy,
+            [XEN_SYSCTL_cpu_featureset_pv]   = &pv_def_cpu_policy,
+            [XEN_SYSCTL_cpu_featureset_pv_max] = &pv_max_cpu_policy,
 #endif
 #ifdef CONFIG_HVM
-            [XEN_SYSCTL_cpu_featureset_hvm]  = &hvm_def_cpuid_policy,
+            [XEN_SYSCTL_cpu_featureset_hvm]  = &hvm_def_cpu_policy,
+            [XEN_SYSCTL_cpu_featureset_hvm_max] = &hvm_max_cpu_policy,
 #endif
         };
-        const struct cpuid_policy *p = NULL;
+        const struct cpu_policy *p = NULL;
         uint32_t featureset[FSCAPINTS];
         unsigned int nr;
 
@@ -369,7 +339,7 @@ long arch_do_sysctl(
             ret = -EINVAL;
 
         if ( !ret )
-            cpuid_policy_to_featureset(p, featureset);
+            x86_cpu_policy_to_featureset(p, featureset);
 
         /* Copy the requested featureset into place. */
         if ( !ret && copy_to_guest(sysctl->u.cpu_featureset.features,
@@ -391,6 +361,18 @@ long arch_do_sysctl(
 
     case XEN_SYSCTL_get_cpu_policy:
     {
+        static const struct cpu_policy *const system_policies[6] = {
+            [XEN_SYSCTL_cpu_policy_raw]         = &raw_cpu_policy,
+            [XEN_SYSCTL_cpu_policy_host]        = &host_cpu_policy,
+#ifdef CONFIG_PV
+            [XEN_SYSCTL_cpu_policy_pv_max]      = &pv_max_cpu_policy,
+            [XEN_SYSCTL_cpu_policy_pv_default]  = &pv_def_cpu_policy,
+#endif
+#ifdef CONFIG_HVM
+            [XEN_SYSCTL_cpu_policy_hvm_max]     = &hvm_max_cpu_policy,
+            [XEN_SYSCTL_cpu_policy_hvm_default] = &hvm_def_cpu_policy,
+#endif
+        };
         const struct cpu_policy *policy;
 
         /* Reserved field set, or bad policy index? */
@@ -400,22 +382,22 @@ long arch_do_sysctl(
             ret = -EINVAL;
             break;
         }
-        policy = &system_policies[
+        policy = system_policies[
             array_index_nospec(sysctl->u.cpu_policy.index,
                                ARRAY_SIZE(system_policies))];
 
-        if ( !policy->cpuid || !policy->msr )
+        if ( !policy )
         {
             ret = -EOPNOTSUPP;
             break;
         }
 
         /* Process the CPUID leaves. */
-        if ( guest_handle_is_null(sysctl->u.cpu_policy.cpuid_policy) )
+        if ( guest_handle_is_null(sysctl->u.cpu_policy.leaves) )
             sysctl->u.cpu_policy.nr_leaves = CPUID_MAX_SERIALISED_LEAVES;
         else if ( (ret = x86_cpuid_copy_to_buffer(
-                       policy->cpuid,
-                       sysctl->u.cpu_policy.cpuid_policy,
+                       policy,
+                       sysctl->u.cpu_policy.leaves,
                        &sysctl->u.cpu_policy.nr_leaves)) )
             break;
 
@@ -427,11 +409,11 @@ long arch_do_sysctl(
         }
 
         /* Process the MSR entries. */
-        if ( guest_handle_is_null(sysctl->u.cpu_policy.msr_policy) )
+        if ( guest_handle_is_null(sysctl->u.cpu_policy.msrs) )
             sysctl->u.cpu_policy.nr_msrs = MSR_MAX_SERIALISED_ENTRIES;
         else if ( (ret = x86_msr_copy_to_buffer(
-                       policy->msr,
-                       sysctl->u.cpu_policy.msr_policy,
+                       policy,
+                       sysctl->u.cpu_policy.msrs,
                        &sysctl->u.cpu_policy.nr_msrs)) )
             break;
 

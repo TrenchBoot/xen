@@ -209,7 +209,7 @@ int libxl__arch_domain_create(libxl__gc *gc,
                               libxl__domain_build_state *state,
                               uint32_t domid)
 {
-    return 0;
+    return libxl__domain_set_paging_mempool_size(gc, d_config, domid);
 }
 
 int libxl__arch_extra_memory(libxl__gc *gc,
@@ -1592,11 +1592,6 @@ int libxl__arch_passthrough_mode_setdefault(libxl__gc *gc,
     rc = 0;
  out:
     return rc;
-}
-
-void libxl__arch_get_physinfo(libxl_physinfo *physinfo,
-                              const xc_physinfo_t *xcphysinfo)
-{
 }
 
 void libxl__arch_update_domain_config(libxl__gc *gc,

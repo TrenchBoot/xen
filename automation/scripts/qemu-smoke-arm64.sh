@@ -4,20 +4,22 @@ set -ex
 
 test_variant=$1
 
-passed="passed"
-check="
-until ifconfig eth0 192.168.0.2 && ping -c 10 192.168.0.1; do
+if [ -z "${test_variant}" ]; then
+    passed="ping test passed"
+    domU_check="
+until ifconfig eth0 192.168.0.2 &> /dev/null && ping -c 10 192.168.0.1; do
     sleep 30
 done
 echo \"${passed}\"
 "
+fi
 
 if [[ "${test_variant}" == "static-mem" ]]; then
     # Memory range that is statically allocated to DOM1
     domu_base="50000000"
     domu_size="10000000"
     passed="${test_variant} test passed"
-    check="
+    domU_check="
 current=\$(hexdump -e '16/1 \"%02x\"' /proc/device-tree/memory@${domu_base}/reg 2>/dev/null)
 expected=$(printf \"%016x%016x\" 0x${domu_base} 0x${domu_size})
 if [[ \"\${expected}\" == \"\${current}\" ]]; then
@@ -26,27 +28,26 @@ fi
 "
 fi
 
-export DEBIAN_FRONTENT=noninteractive
-apt-get -qy update
-apt-get -qy install --no-install-recommends u-boot-qemu \
-                                            u-boot-tools \
-                                            device-tree-compiler \
-                                            busybox-static \
-                                            cpio \
-                                            curl
+if [[ "${test_variant}" == "boot-cpupools" ]]; then
+    # Check if domU0 (id=1) is assigned to Pool-1 with null scheduler
+    passed="${test_variant} test passed"
+    dom0_check="
+if xl list -c 1 | grep -q Pool-1 && xl cpupool-list Pool-1 | grep -q Pool-1; then
+    echo ${passed}
+fi
+"
+fi
 
 # XXX QEMU looks for "efi-virtio.rom" even if it is unneeded
 curl -fsSLO https://github.com/qemu/qemu/raw/v5.2.0/pc-bios/efi-virtio.rom
 ./binaries/qemu-system-aarch64 \
    -machine virtualization=true \
    -cpu cortex-a57 -machine type=virt \
-   -m 1024 -smp 2 -display none \
+   -m 2048 -smp 2 -display none \
    -machine dumpdtb=binaries/virt-gicv2.dtb
-# XXX disable pl061 to avoid Linux crash
-dtc -I dtb -O dts binaries/virt-gicv2.dtb > binaries/virt-gicv2.dts
-sed 's/compatible = "arm,pl061.*/status = "disabled";/g' binaries/virt-gicv2.dts > binaries/virt-gicv2-edited.dts
-dtc -I dts -O dtb binaries/virt-gicv2-edited.dts > binaries/virt-gicv2.dtb
 
+# XXX disable pl061 to avoid Linux crash
+fdtput binaries/virt-gicv2.dtb -p -t s /pl061@9030000 status disabled
 
 # Busybox
 mkdir -p initrd
@@ -66,7 +67,7 @@ echo "#!/bin/sh
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
-${check}
+${domU_check}
 /bin/sh" > initrd/init
 chmod +x initrd/init
 cd initrd
@@ -98,6 +99,7 @@ ifconfig xenbr0 up
 ifconfig xenbr0 192.168.0.1
 
 xl network-attach 1 type=vif
+${dom0_check}
 " > etc/local.d/xen.start
 chmod +x etc/local.d/xen.start
 echo "rc_verbose=yes" >> etc/rc.conf
@@ -106,7 +108,7 @@ cd ..
 
 # ImageBuilder
 echo 'MEMORY_START="0x40000000"
-MEMORY_END="0x80000000"
+MEMORY_END="0xC0000000"
 
 DEVICE_TREE="virt-gicv2.dtb"
 XEN="xen"
@@ -127,6 +129,13 @@ if [[ "${test_variant}" == "static-mem" ]]; then
     echo -e "\nDOMU_STATIC_MEM[0]=\"0x${domu_base} 0x${domu_size}\"" >> binaries/config
 fi
 
+if [[ "${test_variant}" == "boot-cpupools" ]]; then
+    echo '
+CPUPOOL[0]="cpu@1 null"
+DOMU_CPUPOOL[0]=0
+NUM_CPUPOOLS=1' >> binaries/config
+fi
+
 rm -rf imagebuilder
 git clone https://gitlab.com/ViryaOS/imagebuilder
 bash imagebuilder/scripts/uboot-script-gen -t tftp -d binaries/ -c binaries/config
@@ -140,7 +149,7 @@ timeout -k 1 240 \
 ./binaries/qemu-system-aarch64 \
     -machine virtualization=true \
     -cpu cortex-a57 -machine type=virt \
-    -m 1024 -monitor none -serial stdio \
+    -m 2048 -monitor none -serial stdio \
     -smp 2 \
     -no-reboot \
     -device virtio-net-pci,netdev=n0 \
@@ -148,5 +157,5 @@ timeout -k 1 240 \
     -bios /usr/lib/u-boot/qemu_arm64/u-boot.bin |& tee smoke.serial
 
 set -e
-(grep -q "^Welcome to Alpine Linux" smoke.serial && grep -q "DOM1: ${passed}" smoke.serial) || exit 1
+(grep -q "^Welcome to Alpine Linux" smoke.serial && grep -q "${passed}" smoke.serial) || exit 1
 exit 0

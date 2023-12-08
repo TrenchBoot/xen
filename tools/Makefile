@@ -159,6 +159,7 @@ qemu-traditional-recurse = \
 	set -e; \
 		$(buildmakevars2shellvars); \
 		export CONFIG_BLKTAP1=n; \
+		export BUILDING_QEMU_TRAD=y; \
 		cd qemu-xen-traditional-dir; \
 		$(1)
 
@@ -217,9 +218,9 @@ subdir-all-qemu-xen-dir: qemu-xen-dir-find
 	mkdir -p qemu-xen-build; \
 	cd qemu-xen-build; \
 	if $$source/scripts/tracetool.py --check-backend --backend log ; then \
-		enable_trace_backend='--enable-trace-backend=log'; \
+		enable_trace_backend="--enable-trace-backends=log"; \
 	elif $$source/scripts/tracetool.py --check-backend --backend stderr ; then \
-		enable_trace_backend='--enable-trace-backend=stderr'; \
+		enable_trace_backend='--enable-trace-backends=stderr'; \
 	else \
 		enable_trace_backend='' ; \
 	fi ; \

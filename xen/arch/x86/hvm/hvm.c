@@ -77,7 +77,6 @@
 #include <public/memory.h>
 #include <public/vm_event.h>
 #include <public/arch-x86/cpuid.h>
-#include <asm/cpuid.h>
 
 #include <compat/hvm/hvm_op.h>
 
@@ -116,9 +115,6 @@ static const char __initconst warning_hvm_fep[] =
 /* Xen command-line option to enable altp2m */
 static bool_t __initdata opt_altp2m_enabled = 0;
 boolean_param("altp2m", opt_altp2m_enabled);
-
-bool __ro_after_init assisted_xapic_available;
-bool __ro_after_init assisted_x2apic_available;
 
 static int cf_check cpu_callback(
     struct notifier_block *nfb, unsigned long action, void *hcpu)
@@ -598,12 +594,6 @@ int hvm_domain_initialise(struct domain *d,
     INIT_LIST_HEAD(&d->arch.hvm.mmcfg_regions);
     INIT_LIST_HEAD(&d->arch.hvm.msix_tables);
 
-    d->arch.hvm.assisted_xapic =
-        config->arch.misc_flags & XEN_X86_ASSISTED_XAPIC;
-
-    d->arch.hvm.assisted_x2apic =
-        config->arch.misc_flags & XEN_X86_ASSISTED_X2APIC;
-
     rc = create_perdomain_mapping(d, PERDOMAIN_VIRT_START, 0, NULL, NULL);
     if ( rc )
         goto fail;
@@ -915,7 +905,7 @@ const char *hvm_efer_valid(const struct vcpu *v, uint64_t value,
                            signed int cr0_pg)
 {
     const struct domain *d = v->domain;
-    const struct cpuid_policy *p = d->arch.cpuid;
+    const struct cpu_policy *p = d->arch.cpu_policy;
 
     if ( value & ~EFER_KNOWN_MASK )
         return "Unknown bits set";
@@ -952,7 +942,7 @@ const char *hvm_efer_valid(const struct vcpu *v, uint64_t value,
 /* These bits in CR4 can be set by the guest. */
 unsigned long hvm_cr4_guest_valid_bits(const struct domain *d)
 {
-    const struct cpuid_policy *p = d->arch.cpuid;
+    const struct cpu_policy *p = d->arch.cpu_policy;
     bool mce, vmxe, cet;
 
     /* Logic broken out simply to aid readability below. */
@@ -1498,6 +1488,7 @@ static int cf_check hvm_load_cpu_msrs(struct domain *d, hvm_domain_context_t *h)
         case MSR_INTEL_MISC_FEATURES_ENABLES:
         case MSR_IA32_BNDCFGS:
         case MSR_IA32_XSS:
+        case MSR_VIRT_SPEC_CTRL:
         case MSR_AMD64_DR0_ADDRESS_MASK:
         case MSR_AMD64_DR1_ADDRESS_MASK ... MSR_AMD64_DR3_ADDRESS_MASK:
             rc = guest_wrmsr(v, ctxt->msr[i].index, ctxt->msr[i].val);
@@ -2340,6 +2331,21 @@ int hvm_set_cr0(unsigned long value, bool may_defer)
     }
     else if ( !(value & X86_CR0_PG) && (old_value & X86_CR0_PG) )
     {
+        struct segment_register cs;
+
+        hvm_get_segment_register(v, x86_seg_cs, &cs);
+
+        /*
+         * Intel documents a #GP fault in this case, and VMEntry checks reject
+         * it as a valid state.  AMD permits the state transition, and hits
+         * SHUTDOWN immediately thereafter.  Follow the Intel behaviour.
+         */
+        if ( (v->arch.hvm.guest_efer & EFER_LME) && cs.l )
+        {
+            HVM_DBG_LOG(DBG_LEVEL_1, "Guest attempt to clear CR0.PG in 64bit mode");
+            return X86EMUL_EXCEPTION;
+        }
+
         if ( hvm_pcid_enabled(v) )
         {
             HVM_DBG_LOG(DBG_LEVEL_1, "Guest attempts to clear CR0.PG "

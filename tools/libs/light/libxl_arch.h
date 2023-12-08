@@ -87,10 +87,6 @@ int libxl__arch_extra_memory(libxl__gc *gc,
                              uint64_t *out);
 
 _hidden
-void libxl__arch_get_physinfo(libxl_physinfo *physinfo,
-                              const xc_physinfo_t *xcphysinfo);
-
-_hidden
 void libxl__arch_update_domain_config(libxl__gc *gc,
                                       libxl_domain_config *dst,
                                       const libxl_domain_config *src);
@@ -99,10 +95,21 @@ void libxl__arch_update_domain_config(libxl__gc *gc,
 
 #define LAPIC_BASE_ADDRESS  0xfee00000
 #define ACPI_INFO_PHYSICAL_ADDRESS 0xfc000000
+#define EXTRA_DEFAULT_PAGING_MEM_MB 0
 
 int libxl__dom_load_acpi(libxl__gc *gc,
                          const libxl_domain_build_info *b_info,
                          struct xc_dom_image *dom);
+
+#else
+
+/*
+ * 128MB extra default paging memory on Arm for extended regions. This
+ * value is normally enough for domains that are not running backend.
+ * See the `shadow_memory` in xl.cfg documentation for more information.
+ */
+#define EXTRA_DEFAULT_PAGING_MEM_MB 128
+
 #endif
 
 #endif

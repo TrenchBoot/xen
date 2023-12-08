@@ -636,7 +636,6 @@ LIBNL3_LIBS
 LIBNL3_CFLAGS
 argp_ldflags
 libiconv
-PTYFUNCS_LIBS
 PTHREAD_LIBS
 PTHREAD_LDFLAGS
 PTHREAD_CFLAGS
@@ -716,6 +715,7 @@ ocamltools
 monitors
 githttp
 rpath
+werror
 DEBUG_DIR
 XEN_DUMP_DIR
 XEN_PAGING_DIR
@@ -724,7 +724,6 @@ INITD_DIR
 SHAREDIR
 XEN_LIB_DIR
 XEN_RUN_STORED
-XEN_LIB_STORED
 XEN_LOG_DIR
 XEN_RUN_DIR
 XENFIRMWAREDIR
@@ -805,6 +804,7 @@ with_xen_scriptdir
 with_xen_dumpdir
 with_rundir
 with_debugdir
+enable_werror
 enable_rpath
 enable_githttp
 enable_monitors
@@ -1490,6 +1490,7 @@ Optional Features:
   --disable-FEATURE       do not include FEATURE (same as --enable-FEATURE=no)
   --enable-FEATURE[=ARG]  include FEATURE [ARG=yes]
   --disable-largefile     omit support for large files
+  --disable-werror        Build tools without -Werror (default is ENABLED)
   --enable-rpath          Build tools with -Wl,-rpath,LIBDIR (default is
                           DISABLED)
   --enable-githttp        Download GIT repositories via HTTP (default is
@@ -2453,7 +2454,7 @@ ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 
 
-ac_config_files="$ac_config_files ../config/Tools.mk hotplug/FreeBSD/rc.d/xencommons hotplug/FreeBSD/rc.d/xendriverdomain hotplug/Linux/init.d/sysconfig.xencommons hotplug/Linux/init.d/sysconfig.xendomains hotplug/Linux/init.d/xen-watchdog hotplug/Linux/init.d/xencommons hotplug/Linux/init.d/xendomains hotplug/Linux/init.d/xendriverdomain hotplug/Linux/launch-xenstore hotplug/Linux/vif-setup hotplug/Linux/xen-hotplug-common.sh hotplug/Linux/xendomains hotplug/NetBSD/rc.d/xencommons hotplug/NetBSD/rc.d/xendriverdomain ocaml/libs/xs/paths.ml ocaml/xenstored/paths.ml ocaml/xenstored/oxenstored.conf"
+ac_config_files="$ac_config_files ../config/Tools.mk hotplug/common/hotplugpath.sh hotplug/FreeBSD/rc.d/xencommons hotplug/FreeBSD/rc.d/xendriverdomain hotplug/Linux/init.d/sysconfig.xencommons hotplug/Linux/init.d/sysconfig.xendomains hotplug/Linux/init.d/xen-watchdog hotplug/Linux/init.d/xencommons hotplug/Linux/init.d/xendomains hotplug/Linux/init.d/xendriverdomain hotplug/Linux/launch-xenstore hotplug/Linux/vif-setup hotplug/Linux/xen-hotplug-common.sh hotplug/Linux/xendomains hotplug/NetBSD/rc.d/xencommons hotplug/NetBSD/rc.d/xendriverdomain ocaml/libs/xs/paths.ml ocaml/xenstored/paths.ml ocaml/xenstored/oxenstored.conf"
 
 ac_config_headers="$ac_config_headers config.h"
 
@@ -3749,8 +3750,6 @@ esac
 
 
 
-
-
 # Fetched from http://git.savannah.gnu.org/gitweb/?p=autoconf-archive.git;a=blob_plain;f=m4/ax_compare_version.m4
 # Commit ID: 27948f49ca30e4222bb7cdd55182bd7341ac50c5
 # ===========================================================================
@@ -4062,9 +4061,6 @@ cat >>confdefs.h <<_ACEOF
 _ACEOF
 
 
-XEN_LIB_STORED=$localstatedir/lib/xenstored
-
-
 XEN_RUN_STORED=$rundir_path/xenstored
 
 
@@ -4110,6 +4106,29 @@ DEBUG_DIR=$debugdir_path
 
 
 # Enable/disable options
+
+# Check whether --enable-werror was given.
+if test "${enable_werror+set}" = set; then :
+  enableval=$enable_werror;
+fi
+
+
+if test "x$enable_werror" = "xno"; then :
+
+    ax_cv_werror="n"
+
+elif test "x$enable_werror" = "xyes"; then :
+
+    ax_cv_werror="y"
+
+elif test -z $ax_cv_werror; then :
+
+    ax_cv_werror="y"
+
+fi
+werror=$ax_cv_werror
+
+
 
 # Check whether --enable-rpath was given.
 if test "${enable_rpath+set}" = set; then :
@@ -8993,71 +9012,6 @@ $as_echo "$ax_cv_pthread_flags" >&6; }
 
 
 
-
-
-    saved_CPPFLAGS="$CPPFLAGS"
-
-    CPPFLAGS="$CPPFLAGS -Werror"
-    ac_fn_c_check_header_mongrel "$LINENO" "libutil.h" "ac_cv_header_libutil_h" "$ac_includes_default"
-if test "x$ac_cv_header_libutil_h" = xyes; then :
-
-
-$as_echo "#define INCLUDE_LIBUTIL_H <libutil.h>" >>confdefs.h
-
-
-fi
-
-
-
-    CPPFLAGS="$saved_CPPFLAGS"
-
-    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for openpty et al" >&5
-$as_echo_n "checking for openpty et al... " >&6; }
-if ${ax_cv_ptyfuncs_libs+:} false; then :
-  $as_echo_n "(cached) " >&6
-else
-
-        for ax_cv_ptyfuncs_libs in -lutil "" NOT_FOUND; do
-            if test "x$ax_cv_ptyfuncs_libs" = "xNOT_FOUND"; then
-                { { $as_echo "$as_me:${as_lineno-$LINENO}: error: in \`$ac_pwd':" >&5
-$as_echo "$as_me: error: in \`$ac_pwd':" >&2;}
-as_fn_error $? "Unable to find library for openpty and login_tty
-See \`config.log' for more details" "$LINENO" 5; }
-            fi
-
-    saved_LIBS="$LIBS"
-
-            LIBS="$LIBS $ax_cv_ptyfuncs_libs"
-            cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-
-#ifdef INCLUDE_LIBUTIL_H
-#include INCLUDE_LIBUTIL_H
-#endif
-int main(void) {
-  openpty(0,0,0,0,0);
-  login_tty(0);
-}
-
-_ACEOF
-if ac_fn_c_try_link "$LINENO"; then :
-
-                break
-
-fi
-rm -f core conftest.err conftest.$ac_objext \
-    conftest$ac_exeext conftest.$ac_ext
-
-    LIBS="$saved_LIBS"
-
-        done
-
-fi
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ax_cv_ptyfuncs_libs" >&5
-$as_echo "$ax_cv_ptyfuncs_libs" >&6; }
-    PTYFUNCS_LIBS="$ax_cv_ptyfuncs_libs"
-
-
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for yajl_alloc in -lyajl" >&5
 $as_echo_n "checking for yajl_alloc in -lyajl... " >&6; }
 if ${ac_cv_lib_yajl_yajl_alloc+:} false; then :
@@ -10059,7 +10013,7 @@ fi
 
 if test "x$systemd" = "xy"; then :
 
-    ac_config_files="$ac_config_files hotplug/Linux/systemd/proc-xen.mount hotplug/Linux/systemd/var-lib-xenstored.mount hotplug/Linux/systemd/xen-init-dom0.service hotplug/Linux/systemd/xen-qemu-dom0-disk-backend.service hotplug/Linux/systemd/xen-watchdog.service hotplug/Linux/systemd/xenconsoled.service hotplug/Linux/systemd/xendomains.service hotplug/Linux/systemd/xendriverdomain.service hotplug/Linux/systemd/xenstored.service"
+    ac_config_files="$ac_config_files hotplug/Linux/systemd/proc-xen.mount hotplug/Linux/systemd/xen-init-dom0.service hotplug/Linux/systemd/xen-qemu-dom0-disk-backend.service hotplug/Linux/systemd/xen-watchdog.service hotplug/Linux/systemd/xenconsoled.service hotplug/Linux/systemd/xendomains.service hotplug/Linux/systemd/xendriverdomain.service hotplug/Linux/systemd/xenstored.service"
 
 
 fi
@@ -10921,6 +10875,7 @@ for ac_config_target in $ac_config_targets
 do
   case $ac_config_target in
     "../config/Tools.mk") CONFIG_FILES="$CONFIG_FILES ../config/Tools.mk" ;;
+    "hotplug/common/hotplugpath.sh") CONFIG_FILES="$CONFIG_FILES hotplug/common/hotplugpath.sh" ;;
     "hotplug/FreeBSD/rc.d/xencommons") CONFIG_FILES="$CONFIG_FILES hotplug/FreeBSD/rc.d/xencommons" ;;
     "hotplug/FreeBSD/rc.d/xendriverdomain") CONFIG_FILES="$CONFIG_FILES hotplug/FreeBSD/rc.d/xendriverdomain" ;;
     "hotplug/Linux/init.d/sysconfig.xencommons") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/init.d/sysconfig.xencommons" ;;
@@ -10940,7 +10895,6 @@ do
     "ocaml/xenstored/oxenstored.conf") CONFIG_FILES="$CONFIG_FILES ocaml/xenstored/oxenstored.conf" ;;
     "config.h") CONFIG_HEADERS="$CONFIG_HEADERS config.h" ;;
     "hotplug/Linux/systemd/proc-xen.mount") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/systemd/proc-xen.mount" ;;
-    "hotplug/Linux/systemd/var-lib-xenstored.mount") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/systemd/var-lib-xenstored.mount" ;;
     "hotplug/Linux/systemd/xen-init-dom0.service") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/systemd/xen-init-dom0.service" ;;
     "hotplug/Linux/systemd/xen-qemu-dom0-disk-backend.service") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/systemd/xen-qemu-dom0-disk-backend.service" ;;
     "hotplug/Linux/systemd/xen-watchdog.service") CONFIG_FILES="$CONFIG_FILES hotplug/Linux/systemd/xen-watchdog.service" ;;

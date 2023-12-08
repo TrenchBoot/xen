@@ -38,7 +38,6 @@
 #include <xen/livepatch.h>
 #include <public/sysctl.h>
 #include <public/hvm/hvm_vcpu.h>
-#include <asm/altp2m.h>
 #include <asm/regs.h>
 #include <asm/mc146818rtc.h>
 #include <asm/system.h>
@@ -50,7 +49,6 @@
 #include <asm/cpuidle.h>
 #include <asm/mpspec.h>
 #include <asm/ldt.h>
-#include <asm/hvm/domain.h>
 #include <asm/hvm/hvm.h>
 #include <asm/hvm/nestedhvm.h>
 #include <asm/hvm/support.h>
@@ -68,6 +66,7 @@
 #ifdef CONFIG_COMPAT
 #include <compat/vcpu.h>
 #endif
+#include <asm/cpu-policy.h>
 #include <asm/psr.h>
 #include <asm/pv/domain.h>
 #include <asm/pv/mm.h>
@@ -284,7 +283,7 @@ void update_guest_memory_policy(struct vcpu *v,
 
 void domain_cpu_policy_changed(struct domain *d)
 {
-    const struct cpuid_policy *p = d->arch.cpuid;
+    const struct cpu_policy *p = d->arch.cpu_policy;
     struct vcpu *v;
 
     if ( is_pv_domain(d) )
@@ -620,8 +619,6 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
     bool hvm = config->flags & XEN_DOMCTL_CDF_hvm;
     bool hap = config->flags & XEN_DOMCTL_CDF_hap;
     bool nested_virt = config->flags & XEN_DOMCTL_CDF_nested_virt;
-    bool assisted_xapic = config->arch.misc_flags & XEN_X86_ASSISTED_XAPIC;
-    bool assisted_x2apic = config->arch.misc_flags & XEN_X86_ASSISTED_X2APIC;
     unsigned int max_vcpus;
 
     if ( hvm ? !hvm_enabled : !IS_ENABLED(CONFIG_PV) )
@@ -688,29 +685,11 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
         }
     }
 
-    if ( config->arch.misc_flags & ~(XEN_X86_MSR_RELAXED |
-                                     XEN_X86_ASSISTED_XAPIC |
-                                     XEN_X86_ASSISTED_X2APIC) )
+    if ( config->arch.misc_flags & ~XEN_X86_MSR_RELAXED )
     {
         dprintk(XENLOG_INFO, "Invalid arch misc flags %#x\n",
                 config->arch.misc_flags);
         return -EINVAL;
-    }
-
-    if ( (assisted_xapic || assisted_x2apic) && !hvm )
-    {
-        dprintk(XENLOG_INFO,
-                "Interrupt Controller Virtualization not supported for PV\n");
-        return -EINVAL;
-    }
-
-    if ( (assisted_xapic && !assisted_xapic_available) ||
-         (assisted_x2apic && !assisted_x2apic_available) )
-    {
-        dprintk(XENLOG_INFO,
-                "Hardware assisted x%sAPIC requested but not available\n",
-                assisted_xapic && !assisted_xapic_available ? "" : "2");
-        return -ENODEV;
     }
 
     return 0;
@@ -765,8 +744,7 @@ int arch_domain_create(struct domain *d,
 
         d->arch.ctxt_switch = &idle_csw;
 
-        d->arch.cpuid = ZERO_BLOCK_PTR; /* Catch stray misuses. */
-        d->arch.msr = ZERO_BLOCK_PTR;
+        d->arch.cpu_policy = ZERO_BLOCK_PTR; /* Catch stray misuses. */
 
         return 0;
     }
@@ -821,10 +799,7 @@ int arch_domain_create(struct domain *d,
         goto fail;
     paging_initialised = true;
 
-    if ( (rc = init_domain_cpuid_policy(d)) )
-        goto fail;
-
-    if ( (rc = init_domain_msr_policy(d)) )
+    if ( (rc = init_domain_cpu_policy(d)) )
         goto fail;
 
     d->arch.ioport_caps =
@@ -895,8 +870,7 @@ int arch_domain_create(struct domain *d,
     iommu_domain_destroy(d);
     cleanup_domain_irq_mapping(d);
     free_xenheap_page(d->shared_info);
-    xfree(d->arch.cpuid);
-    xfree(d->arch.msr);
+    XFREE(d->arch.cpu_policy);
     if ( paging_initialised )
         paging_final_teardown(d);
     free_perdomain_mappings(d);
@@ -910,8 +884,7 @@ void arch_domain_destroy(struct domain *d)
         hvm_domain_destroy(d);
 
     xfree(d->arch.e820);
-    xfree(d->arch.cpuid);
-    xfree(d->arch.msr);
+    XFREE(d->arch.cpu_policy);
 
     free_domain_pirqs(d);
     if ( !is_idle_domain(d) )
@@ -952,6 +925,7 @@ int arch_domain_soft_reset(struct domain *d)
     struct page_info *page = virt_to_page(d->shared_info), *new_page;
     int ret = 0;
     struct domain *owner;
+    struct vcpu *v;
     mfn_t mfn;
     gfn_t gfn;
     p2m_type_t p2mt;
@@ -1031,7 +1005,12 @@ int arch_domain_soft_reset(struct domain *d)
                "Failed to add a page to replace %pd's shared_info frame %"PRI_gfn"\n",
                d, gfn_x(gfn));
         free_domheap_page(new_page);
+        goto exit_put_gfn;
     }
+
+    for_each_vcpu ( d, v )
+        set_xen_guest_handle(v->arch.time_info_guest, NULL);
+
  exit_put_gfn:
     put_gfn(d, gfn_x(gfn));
  exit_put_page:
@@ -2112,7 +2091,7 @@ void context_switch(struct vcpu *prev, struct vcpu *next)
              */
             if ( *last_id != next_id )
             {
-                wrmsrl(MSR_PRED_CMD, PRED_CMD_IBPB);
+                spec_ctrl_new_guest_context();
                 *last_id = next_id;
             }
         }
@@ -2363,9 +2342,9 @@ int domain_relinquish_resources(struct domain *d)
 
         enum {
             PROG_iommu_pagetables = 1,
+            PROG_shared,
             PROG_paging,
             PROG_vcpu_pagetables,
-            PROG_shared,
             PROG_xen,
             PROG_l4,
             PROG_l3,
@@ -2383,6 +2362,34 @@ int domain_relinquish_resources(struct domain *d)
         ret = iommu_free_pgtables(d);
         if ( ret )
             return ret;
+
+#ifdef CONFIG_MEM_SHARING
+    PROGRESS(shared):
+
+        if ( is_hvm_domain(d) )
+        {
+            /*
+             * If the domain has shared pages, relinquish them allowing
+             * for preemption.
+             */
+            ret = relinquish_shared_pages(d);
+            if ( ret )
+                return ret;
+
+            /*
+             * If the domain is forked, decrement the parent's pause count
+             * and release the domain.
+             */
+            if ( mem_sharing_is_fork(d) )
+            {
+                struct domain *parent = d->parent;
+
+                d->parent = NULL;
+                domain_unpause(parent);
+                put_domain(parent);
+            }
+        }
+#endif
 
     PROGRESS(paging):
 
@@ -2406,12 +2413,6 @@ int domain_relinquish_resources(struct domain *d)
             vpmu_destroy(v);
         }
 
-        if ( altp2m_active(d) )
-        {
-            for_each_vcpu ( d, v )
-                altp2m_vcpu_disable_ve(v);
-        }
-
         if ( is_pv_domain(d) )
         {
             for_each_vcpu ( d, v )
@@ -2429,32 +2430,6 @@ int domain_relinquish_resources(struct domain *d)
             d->arch.pirq_eoi_map = NULL;
             d->arch.auto_unmask = 0;
         }
-
-#ifdef CONFIG_MEM_SHARING
-    PROGRESS(shared):
-
-        if ( is_hvm_domain(d) )
-        {
-            /* If the domain has shared pages, relinquish them allowing
-             * for preemption. */
-            ret = relinquish_shared_pages(d);
-            if ( ret )
-                return ret;
-
-            /*
-             * If the domain is forked, decrement the parent's pause count
-             * and release the domain.
-             */
-            if ( mem_sharing_is_fork(d) )
-            {
-                struct domain *parent = d->parent;
-
-                d->parent = NULL;
-                domain_unpause(parent);
-                put_domain(parent);
-            }
-        }
-#endif
 
         spin_lock(&d->page_alloc_lock);
         page_list_splice(&d->arch.relmem_list, &d->page_list);

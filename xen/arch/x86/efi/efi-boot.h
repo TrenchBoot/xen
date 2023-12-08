@@ -185,7 +185,9 @@ static void __init efi_arch_process_memory_map(EFI_SYSTEM_TABLE *SystemTable,
             /* fall through */
         case EfiLoaderCode:
         case EfiLoaderData:
-            if ( desc->Attribute & EFI_MEMORY_WB )
+            if ( desc->Attribute & EFI_MEMORY_RUNTIME )
+                type = E820_RESERVED;
+            else if ( desc->Attribute & EFI_MEMORY_WB )
                 type = E820_RAM;
             else
         case EfiUnusableMemory:
@@ -504,6 +506,13 @@ static void __init efi_arch_video_init(EFI_GRAPHICS_OUTPUT_PROTOCOL *gop,
 #ifdef CONFIG_VIDEO
     int bpp = 0;
 
+    if ( !gop->Mode->FrameBufferBase || !mode_info->HorizontalResolution ||
+         !mode_info->VerticalResolution )
+    {
+        PrintErr(L"Invalid Frame Buffer configuration found\r\n");
+        return;
+    }
+
     switch ( mode_info->PixelFormat )
     {
     case PixelRedGreenBlueReserved8BitPerColor:
@@ -813,6 +822,8 @@ void __init efi_multiboot2(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
 
     if ( gop )
         efi_set_gop_mode(gop, gop_mode);
+
+    efi_relocate_esrt(SystemTable);
 
     efi_exit_boot(ImageHandle, SystemTable);
 }

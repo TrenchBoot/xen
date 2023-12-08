@@ -8,14 +8,9 @@
 #include <xen/kernel.h>
 #include <xen/percpu.h>
 
-#include <xen/lib/x86/cpu-policy.h>
-#include <xen/lib/x86/cpuid.h>
-
 #include <public/sysctl.h>
 
 extern const uint32_t known_features[FSCAPINTS];
-
-void init_guest_cpuid(void);
 
 /*
  * Expected levelling capabilities (given cpuid vendor/family information),
@@ -47,25 +42,11 @@ DECLARE_PER_CPU(struct cpuidmasks, cpuidmasks);
 /* Default masking MSR values, calculated at boot. */
 extern struct cpuidmasks cpuidmask_defaults;
 
-extern struct cpuid_policy raw_cpuid_policy, host_cpuid_policy,
-    pv_max_cpuid_policy, pv_def_cpuid_policy,
-    hvm_max_cpuid_policy, hvm_def_cpuid_policy;
-
-extern const struct cpu_policy system_policies[];
-
 /* Check that all previously present features are still available. */
 bool recheck_cpu_features(unsigned int cpu);
 
-/* Allocate and initialise a CPUID policy suitable for the domain. */
-int init_domain_cpuid_policy(struct domain *d);
-
-/* Apply dom0-specific tweaks to the CPUID policy. */
-void init_dom0_cpuid_policy(struct domain *d);
-
-/* Clamp the CPUID policy to reality. */
-void recalculate_cpuid_policy(struct domain *d);
-
 struct vcpu;
+struct cpuid_leaf;
 void guest_cpuid(const struct vcpu *v, uint32_t leaf,
                  uint32_t subleaf, struct cpuid_leaf *res);
 

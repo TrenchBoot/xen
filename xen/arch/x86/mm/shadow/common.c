@@ -36,6 +36,7 @@
 #include <asm/flushtlb.h>
 #include <asm/shadow.h>
 #include <xen/numa.h>
+#include <public/sched.h>
 #include "private.h"
 
 DEFINE_PER_CPU(uint32_t,trace_shadow_path_flags);
@@ -928,17 +929,23 @@ static inline void trace_shadow_prealloc_unpin(struct domain *d, mfn_t smfn)
 
 /* Make sure there are at least count order-sized pages
  * available in the shadow page pool. */
-static void _shadow_prealloc(struct domain *d, unsigned int pages)
+static bool __must_check _shadow_prealloc(struct domain *d, unsigned int pages)
 {
     struct vcpu *v;
     struct page_info *sp, *t;
     mfn_t smfn;
     int i;
 
-    if ( d->arch.paging.shadow.free_pages >= pages ) return;
+    if ( d->arch.paging.shadow.free_pages >= pages )
+        return true;
 
-    /* Shouldn't have enabled shadows if we've no vcpus. */
-    ASSERT(d->vcpu && d->vcpu[0]);
+    if ( unlikely(d->is_dying) )
+        /* No reclaim when the domain is dying, teardown will take care of it. */
+        return false;
+
+    /* Nothing to reclaim when there are no vcpus yet. */
+    if ( !d->vcpu[0] )
+        return false;
 
     /* Stage one: walk the list of pinned pages, unpinning them */
     perfc_incr(shadow_prealloc_1);
@@ -951,7 +958,8 @@ static void _shadow_prealloc(struct domain *d, unsigned int pages)
         sh_unpin(d, smfn);
 
         /* See if that freed up enough space */
-        if ( d->arch.paging.shadow.free_pages >= pages ) return;
+        if ( d->arch.paging.shadow.free_pages >= pages )
+            return true;
     }
 
     /* Stage two: all shadow pages are in use in hierarchies that are
@@ -974,7 +982,7 @@ static void _shadow_prealloc(struct domain *d, unsigned int pages)
                 if ( d->arch.paging.shadow.free_pages >= pages )
                 {
                     guest_flush_tlb_mask(d, d->dirty_cpumask);
-                    return;
+                    return true;
                 }
             }
         }
@@ -987,7 +995,12 @@ static void _shadow_prealloc(struct domain *d, unsigned int pages)
            d->arch.paging.shadow.total_pages,
            d->arch.paging.shadow.free_pages,
            d->arch.paging.shadow.p2m_pages);
-    BUG();
+
+    ASSERT_UNREACHABLE();
+
+    guest_flush_tlb_mask(d, d->dirty_cpumask);
+
+    return false;
 }
 
 /* Make sure there are at least count pages of the order according to
@@ -995,9 +1008,32 @@ static void _shadow_prealloc(struct domain *d, unsigned int pages)
  * This must be called before any calls to shadow_alloc().  Since this
  * will free existing shadows to make room, it must be called early enough
  * to avoid freeing shadows that the caller is currently working on. */
-void shadow_prealloc(struct domain *d, u32 type, unsigned int count)
+bool shadow_prealloc(struct domain *d, unsigned int type, unsigned int count)
 {
-    return _shadow_prealloc(d, shadow_size(type) * count);
+    bool ret;
+
+    if ( unlikely(d->is_dying) )
+       return false;
+
+    count *= shadow_size(type);
+    /*
+     * Log-dirty handling may result in allocations when populating its
+     * tracking structures.  Tie this to the caller requesting space for L1
+     * shadows.
+     */
+    if ( paging_mode_log_dirty(d) &&
+         ((SHF_L1_ANY | SHF_FL1_ANY) & (1u << type)) )
+        count += paging_logdirty_levels();
+
+    ret = _shadow_prealloc(d, count);
+    if ( !ret && (!d->is_shutting_down || d->shutdown_code != SHUTDOWN_crash) )
+        /*
+         * Failing to allocate memory required for shadow usage can only result in
+         * a domain crash, do it here rather that relying on every caller to do it.
+         */
+        domain_crash(d);
+
+    return ret;
 }
 
 /* Deliberately free all the memory we can: this will tear down all of
@@ -1009,8 +1045,9 @@ void shadow_blow_tables(struct domain *d)
     mfn_t smfn;
     int i;
 
-    /* Shouldn't have enabled shadows if we've no vcpus. */
-    ASSERT(d->vcpu && d->vcpu[0]);
+    /* Nothing to do when there are no vcpus yet. */
+    if ( !d->vcpu[0] )
+        return;
 
     /* Pass one: unpin all pinned pages */
     foreach_pinned_shadow(d, sp, t)
@@ -1162,6 +1199,7 @@ mfn_t shadow_alloc(struct domain *d,
 void shadow_free(struct domain *d, mfn_t smfn)
 {
     struct page_info *next = NULL, *sp = mfn_to_page(smfn);
+    bool dying = ACCESS_ONCE(d->is_dying);
     struct page_list_head *pin_list;
     unsigned int pages;
     u32 shadow_type;
@@ -1204,11 +1242,32 @@ void shadow_free(struct domain *d, mfn_t smfn)
          * just before the allocator hands the page out again. */
         page_set_tlbflush_timestamp(sp);
         perfc_decr(shadow_alloc_count);
-        page_list_add_tail(sp, &d->arch.paging.shadow.freelist);
+
+        /*
+         * For dying domains, actually free the memory here. This way less
+         * work is left to shadow_final_teardown(), which cannot easily have
+         * preemption checks added.
+         */
+        if ( unlikely(dying) )
+        {
+            /*
+             * The backpointer field (sh.back) used by shadow code aliases the
+             * domain owner field, unconditionally clear it here to avoid
+             * free_domheap_page() attempting to parse it.
+             */
+            page_set_owner(sp, NULL);
+            free_domheap_page(sp);
+        }
+        else
+            page_list_add_tail(sp, &d->arch.paging.shadow.freelist);
+
         sp = next;
     }
 
-    d->arch.paging.shadow.free_pages += pages;
+    if ( unlikely(dying) )
+        d->arch.paging.shadow.total_pages -= pages;
+    else
+        d->arch.paging.shadow.free_pages += pages;
 }
 
 /* Divert a page from the pool to be used by the p2m mapping.
@@ -1218,7 +1277,10 @@ void shadow_free(struct domain *d, mfn_t smfn)
 static struct page_info *cf_check
 shadow_alloc_p2m_page(struct domain *d)
 {
-    struct page_info *pg;
+    struct page_info *pg = NULL;
+
+    if ( unlikely(d->is_dying) )
+       return NULL;
 
     /* This is called both from the p2m code (which never holds the
      * paging lock) and the log-dirty code (which always does). */
@@ -1236,16 +1298,18 @@ shadow_alloc_p2m_page(struct domain *d)
                     d->arch.paging.shadow.p2m_pages,
                     shadow_min_acceptable_pages(d));
         }
-        paging_unlock(d);
-        return NULL;
+        goto out;
     }
 
-    shadow_prealloc(d, SH_type_p2m_table, 1);
+    if ( !shadow_prealloc(d, SH_type_p2m_table, 1) )
+        goto out;
+
     pg = mfn_to_page(shadow_alloc(d, SH_type_p2m_table, 0));
     d->arch.paging.shadow.p2m_pages++;
     d->arch.paging.shadow.total_pages--;
     ASSERT(!page_get_owner(pg) && !(pg->count_info & PGC_count_mask));
 
+ out:
     paging_unlock(d);
 
     return pg;
@@ -1273,9 +1337,9 @@ shadow_free_p2m_page(struct domain *d, struct page_info *pg)
      * paging lock) and the log-dirty code (which always does). */
     paging_lock_recursive(d);
 
-    shadow_free(d, page_to_mfn(pg));
     d->arch.paging.shadow.p2m_pages--;
     d->arch.paging.shadow.total_pages++;
+    shadow_free(d, page_to_mfn(pg));
 
     paging_unlock(d);
 }
@@ -1336,7 +1400,9 @@ int shadow_set_allocation(struct domain *d, unsigned int pages, bool *preempted)
         else if ( d->arch.paging.shadow.total_pages > pages )
         {
             /* Need to return memory to domheap */
-            _shadow_prealloc(d, 1);
+            if ( !_shadow_prealloc(d, 1) )
+                return -ENOMEM;
+
             sp = page_list_remove_head(&d->arch.paging.shadow.freelist);
             ASSERT(sp);
             /*
@@ -1369,6 +1435,17 @@ static unsigned int shadow_get_allocation(struct domain *d)
         + d->arch.paging.shadow.p2m_pages;
     return ((pg >> (20 - PAGE_SHIFT))
             + ((pg & ((1 << (20 - PAGE_SHIFT)) - 1)) ? 1 : 0));
+}
+
+int shadow_get_allocation_bytes(struct domain *d, uint64_t *size)
+{
+    unsigned long pages = d->arch.paging.shadow.total_pages;
+
+    pages += d->arch.paging.shadow.p2m_pages;
+
+    *size = pages << PAGE_SHIFT;
+
+    return 0;
 }
 
 /**************************************************************************/
@@ -2339,12 +2416,13 @@ static void sh_update_paging_modes(struct vcpu *v)
     if ( mfn_eq(v->arch.paging.shadow.oos_snapshot[0], INVALID_MFN) )
     {
         int i;
+
+        if ( !shadow_prealloc(d, SH_type_oos_snapshot, SHADOW_OOS_PAGES) )
+            return;
+
         for(i = 0; i < SHADOW_OOS_PAGES; i++)
-        {
-            shadow_prealloc(d, SH_type_oos_snapshot, 1);
             v->arch.paging.shadow.oos_snapshot[i] =
                 shadow_alloc(d, SH_type_oos_snapshot, 0);
-        }
     }
 #endif /* OOS */
 
@@ -2408,6 +2486,9 @@ static void sh_update_paging_modes(struct vcpu *v)
             mfn_t mmfn = sh_make_monitor_table(
                              v, v->arch.paging.mode->shadow.shadow_levels);
 
+            if ( mfn_eq(mmfn, INVALID_MFN) )
+                return;
+
             v->arch.hvm.monitor_table = pagetable_from_mfn(mmfn);
             make_cr3(v, mmfn);
             hvm_update_host_cr3(v);
@@ -2446,6 +2527,12 @@ static void sh_update_paging_modes(struct vcpu *v)
                 v->arch.hvm.monitor_table = pagetable_null();
                 new_mfn = sh_make_monitor_table(
                               v, v->arch.paging.mode->shadow.shadow_levels);
+                if ( mfn_eq(new_mfn, INVALID_MFN) )
+                {
+                    sh_destroy_monitor_table(v, old_mfn,
+                                             old_mode->shadow.shadow_levels);
+                    return;
+                }
                 v->arch.hvm.monitor_table = pagetable_from_mfn(new_mfn);
                 SHADOW_PRINTK("new monitor table %"PRI_mfn "\n",
                                mfn_x(new_mfn));
@@ -2521,6 +2608,7 @@ void sh_set_toplevel_shadow(struct vcpu *v,
     /* Now figure out the new contents: is this a valid guest MFN? */
     if ( !mfn_valid(gmfn) )
     {
+        ASSERT(mfn_eq(gmfn, INVALID_MFN));
         new_entry = pagetable_null();
         goto install_new_entry;
     }
@@ -2530,7 +2618,12 @@ void sh_set_toplevel_shadow(struct vcpu *v,
     if ( !mfn_valid(smfn) )
     {
         /* Make sure there's enough free shadow memory. */
-        shadow_prealloc(d, root_type, 1);
+        if ( !shadow_prealloc(d, root_type, 1) )
+        {
+            new_entry = pagetable_null();
+            goto install_new_entry;
+        }
+
         /* Shadow the page. */
         smfn = make_shadow(v, gmfn, root_type);
     }
@@ -2706,8 +2799,12 @@ int shadow_enable(struct domain *d, u32 mode)
     paging_unlock(d);
  out_unlocked:
 #ifdef CONFIG_HVM
+    /*
+     * This is fine to ignore the preemption here because only the root
+     * will be allocated by p2m_alloc_table().
+     */
     if ( rv != 0 && !pagetable_is_null(p2m_get_pagetable(p2m)) )
-        p2m_teardown(p2m);
+        p2m_teardown(p2m, true, NULL);
 #endif
     if ( rv != 0 && pg != NULL )
     {
@@ -2761,7 +2858,18 @@ void shadow_teardown(struct domain *d, bool *preempted)
     for_each_vcpu ( d, v )
         shadow_vcpu_teardown(v);
 
+    p2m_teardown(p2m_get_hostp2m(d), false, preempted);
+    if ( preempted && *preempted )
+        return;
+
     paging_lock(d);
+
+    /*
+     * Reclaim all shadow memory so that shadow_set_allocation() doesn't find
+     * in-use pages, as _shadow_prealloc() will no longer try to reclaim pages
+     * because the domain is dying.
+     */
+    shadow_blow_tables(d);
 
 #if (SHADOW_OPTIMIZATIONS & (SHOPT_VIRTUAL_TLB|SHOPT_OUT_OF_SYNC))
     /* Free the virtual-TLB array attached to each vcpu */
@@ -2873,7 +2981,7 @@ void shadow_final_teardown(struct domain *d)
         shadow_teardown(d, NULL);
 
     /* It is now safe to pull down the p2m map. */
-    p2m_teardown(p2m_get_hostp2m(d));
+    p2m_teardown(p2m_get_hostp2m(d), true, NULL);
     /* Free any shadow memory that the p2m teardown released */
     paging_lock(d);
     shadow_set_allocation(d, 0, NULL);
@@ -2883,6 +2991,9 @@ void shadow_final_teardown(struct domain *d)
                    d->arch.paging.shadow.total_pages,
                    d->arch.paging.shadow.free_pages,
                    d->arch.paging.shadow.p2m_pages);
+    ASSERT(!d->arch.paging.shadow.total_pages);
+    ASSERT(!d->arch.paging.shadow.free_pages);
+    ASSERT(!d->arch.paging.shadow.p2m_pages);
     paging_unlock(d);
 }
 

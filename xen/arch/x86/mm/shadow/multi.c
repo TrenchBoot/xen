@@ -2447,9 +2447,14 @@ static int cf_check sh_page_fault(
      * Preallocate shadow pages *before* removing writable accesses
      * otherwhise an OOS L1 might be demoted and promoted again with
      * writable mappings. */
-    shadow_prealloc(d,
-                    SH_type_l1_shadow,
-                    GUEST_PAGING_LEVELS < 4 ? 1 : GUEST_PAGING_LEVELS - 1);
+    if ( !shadow_prealloc(d, SH_type_l1_shadow,
+                          GUEST_PAGING_LEVELS < 4
+                          ? 1 : GUEST_PAGING_LEVELS - 1) )
+    {
+        paging_unlock(d);
+        put_gfn(d, gfn_x(gfn));
+        return 0;
+    }
 
     rc = gw_remove_write_accesses(v, va, &gw);
 
@@ -2667,10 +2672,10 @@ static int cf_check sh_page_fault(
 #if GUEST_PAGING_LEVELS == 3
             unsigned int i;
 
-            for_each_shadow_table(v, i)
+            for_each_shadow_table(tmp, i)
             {
                 mfn_t smfn = pagetable_get_mfn(
-                                 v->arch.paging.shadow.shadow_table[i]);
+                                 tmp->arch.paging.shadow.shadow_table[i]);
 
                 if ( mfn_valid(smfn) && (mfn_x(smfn) != 0) )
                 {
@@ -3316,6 +3321,11 @@ static void cf_check sh_update_cr3(struct vcpu *v, int do_locking, bool noflush)
     if ( sh_remove_write_access(d, gmfn, 4, 0) != 0 )
         guest_flush_tlb_mask(d, d->dirty_cpumask);
     sh_set_toplevel_shadow(v, 0, gmfn, SH_type_l4_shadow, sh_make_shadow);
+    if ( unlikely(pagetable_is_null(v->arch.paging.shadow.shadow_table[0])) )
+    {
+        ASSERT(d->is_dying || d->is_shutting_down);
+        return;
+    }
     if ( !shadow_mode_external(d) && !is_pv_32bit_domain(d) )
     {
         mfn_t smfn = pagetable_get_mfn(v->arch.paging.shadow.shadow_table[0]);
@@ -3372,6 +3382,11 @@ static void cf_check sh_update_cr3(struct vcpu *v, int do_locking, bool noflush)
     if ( sh_remove_write_access(d, gmfn, 2, 0) != 0 )
         guest_flush_tlb_mask(d, d->dirty_cpumask);
     sh_set_toplevel_shadow(v, 0, gmfn, SH_type_l2_shadow, sh_make_shadow);
+    if ( unlikely(pagetable_is_null(v->arch.paging.shadow.shadow_table[0])) )
+    {
+        ASSERT(d->is_dying || d->is_shutting_down);
+        return;
+    }
 #else
 #error This should never happen
 #endif

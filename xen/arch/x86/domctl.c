@@ -36,45 +36,49 @@
 #include <asm/mem_sharing.h>
 #include <asm/xstate.h>
 #include <asm/psr.h>
-#include <asm/cpuid.h>
+#include <asm/cpu-policy.h>
 
 static int update_domain_cpu_policy(struct domain *d,
                                     xen_domctl_cpu_policy_t *xdpc)
 {
-    struct cpu_policy new = {};
+    struct cpu_policy *new;
     const struct cpu_policy *sys = is_pv_domain(d)
-        ? &system_policies[XEN_SYSCTL_cpu_policy_pv_max]
-        : &system_policies[XEN_SYSCTL_cpu_policy_hvm_max];
+        ? (IS_ENABLED(CONFIG_PV)  ?  &pv_max_cpu_policy : NULL)
+        : (IS_ENABLED(CONFIG_HVM) ? &hvm_max_cpu_policy : NULL);
     struct cpu_policy_errors err = INIT_CPU_POLICY_ERRORS;
     int ret = -ENOMEM;
 
-    /* Start by copying the domain's existing policies. */
-    if ( !(new.cpuid = xmemdup(d->arch.cpuid)) ||
-         !(new.msr   = xmemdup(d->arch.msr)) )
+    if ( !sys )
+    {
+        ASSERT_UNREACHABLE();
+        return -EOPNOTSUPP;
+    }
+
+    /* Start by copying the domain's existing policy. */
+    if ( !(new = xmemdup(d->arch.cpu_policy)) )
         goto out;
 
     /* Merge the toolstack provided data. */
     if ( (ret = x86_cpuid_copy_from_buffer(
-              new.cpuid, xdpc->cpuid_policy, xdpc->nr_leaves,
+              new, xdpc->leaves, xdpc->nr_leaves,
               &err.leaf, &err.subleaf)) ||
          (ret = x86_msr_copy_from_buffer(
-              new.msr, xdpc->msr_policy, xdpc->nr_msrs, &err.msr)) )
+              new, xdpc->msrs, xdpc->nr_msrs, &err.msr)) )
         goto out;
 
     /* Trim any newly-stale out-of-range leaves. */
-    x86_cpuid_policy_clear_out_of_range_leaves(new.cpuid);
+    x86_cpu_policy_clear_out_of_range_leaves(new);
 
     /* Audit the combined dataset. */
-    ret = x86_cpu_policies_are_compatible(sys, &new, &err);
+    ret = x86_cpu_policies_are_compatible(sys, new, &err);
     if ( ret )
         goto out;
 
     /*
-     * Audit was successful.  Replace existing policies, leaving the old
-     * policies to be freed.
+     * Audit was successful.  Replace the existing policy, leaving the old one
+     * to be freed.
      */
-    SWAP(new.cpuid, d->arch.cpuid);
-    SWAP(new.msr,   d->arch.msr);
+    SWAP(new, d->arch.cpu_policy);
 
     /* TODO: Drop when x86_cpu_policies_are_compatible() is completed. */
     recalculate_cpuid_policy(d);
@@ -83,9 +87,8 @@ static int update_domain_cpu_policy(struct domain *d,
     domain_cpu_policy_changed(d);
 
  out:
-    /* Free whichever cpuid/msr structs are not installed in struct domain. */
-    xfree(new.cpuid);
-    xfree(new.msr);
+    /* Free whichever struct is not installed in struct domain. */
+    xfree(new);
 
     if ( ret )
     {
@@ -232,8 +235,6 @@ long arch_do_domctl(
             ret = ioports_permit_access(d, fp, fp + np - 1);
         else
             ret = ioports_deny_access(d, fp, fp + np - 1);
-        if ( !ret )
-            memory_type_changed(d);
         break;
     }
 
@@ -666,8 +667,6 @@ long arch_do_domctl(
                        "ioport_map: error %ld denying dom%d access to [%x,%x]\n",
                        ret, d->domain_id, fmp, fmp + np - 1);
         }
-        if ( !ret )
-            memory_type_changed(d);
         break;
     }
 
@@ -1322,20 +1321,20 @@ long arch_do_domctl(
 
     case XEN_DOMCTL_get_cpu_policy:
         /* Process the CPUID leaves. */
-        if ( guest_handle_is_null(domctl->u.cpu_policy.cpuid_policy) )
+        if ( guest_handle_is_null(domctl->u.cpu_policy.leaves) )
             domctl->u.cpu_policy.nr_leaves = CPUID_MAX_SERIALISED_LEAVES;
         else if ( (ret = x86_cpuid_copy_to_buffer(
-                       d->arch.cpuid,
-                       domctl->u.cpu_policy.cpuid_policy,
+                       d->arch.cpu_policy,
+                       domctl->u.cpu_policy.leaves,
                        &domctl->u.cpu_policy.nr_leaves)) )
             break;
 
         /* Process the MSR entries. */
-        if ( guest_handle_is_null(domctl->u.cpu_policy.msr_policy) )
+        if ( guest_handle_is_null(domctl->u.cpu_policy.msrs) )
             domctl->u.cpu_policy.nr_msrs = MSR_MAX_SERIALISED_ENTRIES;
         else if ( (ret = x86_msr_copy_to_buffer(
-                       d->arch.msr,
-                       domctl->u.cpu_policy.msr_policy,
+                       d->arch.cpu_policy,
+                       domctl->u.cpu_policy.msrs,
                        &domctl->u.cpu_policy.nr_msrs)) )
             break;
 

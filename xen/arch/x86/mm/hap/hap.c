@@ -28,6 +28,7 @@
 #include <xen/domain_page.h>
 #include <xen/guest_access.h>
 #include <xen/keyhandler.h>
+#include <asm/altp2m.h>
 #include <asm/event.h>
 #include <asm/page.h>
 #include <asm/current.h>
@@ -39,6 +40,7 @@
 #include <asm/domain.h>
 #include <xen/numa.h>
 #include <asm/hvm/nestedhvm.h>
+#include <public/sched.h>
 
 #include "private.h"
 
@@ -244,6 +246,9 @@ static struct page_info *hap_alloc(struct domain *d)
 
     ASSERT(paging_locked_by_me(d));
 
+    if ( unlikely(d->is_dying) )
+        return NULL;
+
     pg = page_list_remove_head(&d->arch.paging.hap.freelist);
     if ( unlikely(!pg) )
         return NULL;
@@ -260,6 +265,18 @@ static void hap_free(struct domain *d, mfn_t mfn)
     struct page_info *pg = mfn_to_page(mfn);
 
     ASSERT(paging_locked_by_me(d));
+
+    /*
+     * For dying domains, actually free the memory here. This way less work is
+     * left to hap_final_teardown(), which cannot easily have preemption checks
+     * added.
+     */
+    if ( unlikely(d->is_dying) )
+    {
+        free_domheap_page(pg);
+        d->arch.paging.hap.total_pages--;
+        return;
+    }
 
     d->arch.paging.hap.free_pages++;
     page_list_add_tail(pg, &d->arch.paging.hap.freelist);
@@ -280,7 +297,7 @@ static struct page_info *cf_check hap_alloc_p2m_page(struct domain *d)
         d->arch.paging.hap.p2m_pages++;
         ASSERT(!page_get_owner(pg) && !(pg->count_info & PGC_count_mask));
     }
-    else if ( !d->arch.paging.p2m_alloc_failed )
+    else if ( !d->arch.paging.p2m_alloc_failed && !d->is_dying )
     {
         d->arch.paging.p2m_alloc_failed = 1;
         dprintk(XENLOG_ERR, "d%i failed to allocate from HAP pool\n",
@@ -326,6 +343,17 @@ unsigned int hap_get_allocation(struct domain *d)
 
     return ((pg >> (20 - PAGE_SHIFT))
             + ((pg & ((1 << (20 - PAGE_SHIFT)) - 1)) ? 1 : 0));
+}
+
+int hap_get_allocation_bytes(struct domain *d, uint64_t *size)
+{
+    unsigned long pages = d->arch.paging.hap.total_pages;
+
+    pages += d->arch.paging.hap.p2m_pages;
+
+    *size = pages << PAGE_SHIFT;
+
+    return 0;
 }
 
 /* Set the pool of pages to the required number of pages.
@@ -405,8 +433,13 @@ static mfn_t hap_make_monitor_table(struct vcpu *v)
     return m4mfn;
 
  oom:
-    printk(XENLOG_G_ERR "out of memory building monitor pagetable\n");
-    domain_crash(d);
+    if ( !d->is_dying &&
+         (!d->is_shutting_down || d->shutdown_code != SHUTDOWN_crash) )
+    {
+        printk(XENLOG_G_ERR "%pd: out of memory building monitor pagetable\n",
+               d);
+        domain_crash(d);
+    }
     return INVALID_MFN;
 }
 
@@ -525,38 +558,24 @@ void hap_final_teardown(struct domain *d)
     unsigned int i;
 
     if ( hvm_altp2m_supported() )
-    {
-        d->arch.altp2m_active = 0;
-
-        if ( d->arch.altp2m_eptp )
-        {
-            free_xenheap_page(d->arch.altp2m_eptp);
-            d->arch.altp2m_eptp = NULL;
-        }
-
-        if ( d->arch.altp2m_visible_eptp )
-        {
-            free_xenheap_page(d->arch.altp2m_visible_eptp);
-            d->arch.altp2m_visible_eptp = NULL;
-        }
-
         for ( i = 0; i < MAX_ALTP2M; i++ )
-            p2m_teardown(d->arch.altp2m_p2m[i]);
-    }
+            p2m_teardown(d->arch.altp2m_p2m[i], true, NULL);
 
     /* Destroy nestedp2m's first */
     for (i = 0; i < MAX_NESTEDP2M; i++) {
-        p2m_teardown(d->arch.nested_p2m[i]);
+        p2m_teardown(d->arch.nested_p2m[i], true, NULL);
     }
 
     if ( d->arch.paging.hap.total_pages != 0 )
         hap_teardown(d, NULL);
 
-    p2m_teardown(p2m_get_hostp2m(d));
+    p2m_teardown(p2m_get_hostp2m(d), true, NULL);
     /* Free any memory that the p2m teardown released */
     paging_lock(d);
     hap_set_allocation(d, 0, NULL);
     ASSERT(d->arch.paging.hap.p2m_pages == 0);
+    ASSERT(d->arch.paging.hap.free_pages == 0);
+    ASSERT(d->arch.paging.hap.total_pages == 0);
     paging_unlock(d);
 }
 
@@ -582,6 +601,7 @@ void hap_vcpu_teardown(struct vcpu *v)
 void hap_teardown(struct domain *d, bool *preempted)
 {
     struct vcpu *v;
+    unsigned int i;
 
     ASSERT(d->is_dying);
     ASSERT(d != current->domain);
@@ -589,6 +609,38 @@ void hap_teardown(struct domain *d, bool *preempted)
     /* TODO - Remove when the teardown path is better structured. */
     for_each_vcpu ( d, v )
         hap_vcpu_teardown(v);
+
+    /* Leave the root pt in case we get further attempts to modify the p2m. */
+    if ( hvm_altp2m_supported() )
+    {
+        if ( altp2m_active(d) )
+            for_each_vcpu ( d, v )
+                altp2m_vcpu_disable_ve(v);
+
+        d->arch.altp2m_active = 0;
+
+        FREE_XENHEAP_PAGE(d->arch.altp2m_eptp);
+        FREE_XENHEAP_PAGE(d->arch.altp2m_visible_eptp);
+
+        for ( i = 0; i < MAX_ALTP2M; i++ )
+        {
+            p2m_teardown(d->arch.altp2m_p2m[i], false, preempted);
+            if ( preempted && *preempted )
+                return;
+        }
+    }
+
+    /* Destroy nestedp2m's after altp2m. */
+    for ( i = 0; i < MAX_NESTEDP2M; i++ )
+    {
+        p2m_teardown(d->arch.nested_p2m[i], false, preempted);
+        if ( preempted && *preempted )
+            return;
+    }
+
+    p2m_teardown(p2m_get_hostp2m(d), false, preempted);
+    if ( preempted && *preempted )
+        return;
 
     paging_lock(d); /* Keep various asserts happy */
 
@@ -763,6 +815,9 @@ static void cf_check hap_update_paging_modes(struct vcpu *v)
     if ( pagetable_is_null(v->arch.hvm.monitor_table) )
     {
         mfn_t mmfn = hap_make_monitor_table(v);
+
+        if ( mfn_eq(mmfn, INVALID_MFN) )
+            goto unlock;
         v->arch.hvm.monitor_table = pagetable_from_mfn(mmfn);
         make_cr3(v, mmfn);
         hvm_update_host_cr3(v);
@@ -771,6 +826,7 @@ static void cf_check hap_update_paging_modes(struct vcpu *v)
     /* CR3 is effectively updated by a mode change. Flush ASIDs, etc. */
     hap_update_cr3(v, 0, false);
 
+ unlock:
     paging_unlock(d);
     put_gfn(d, cr3_gfn);
 }

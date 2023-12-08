@@ -105,28 +105,28 @@ config HARDEN_BRANCH_PREDICTOR
 
 config ARM64_PTR_AUTH
 	def_bool n
-	depends on ARM64
+	depends on ARM_64
 	help
 	  Pointer authentication support.
 	  This feature is not supported in Xen.
 
 config ARM64_SVE
 	def_bool n
-	depends on ARM64
+	depends on ARM_64
 	help
 	  Scalar Vector Extension support.
 	  This feature is not supported in Xen.
 
 config ARM64_MTE
 	def_bool n
-	depends on ARM64
+	depends on ARM_64
 	help
 	  Memory Tagging Extension support.
 	  This feature is not supported in Xen.
 
 config ARM64_BTI
 	def_bool n
-	depends on ARM64
+	depends on ARM_64
 	help
 	  Branch Target Identification support.
 	  This feature is not supported in Xen.
@@ -139,6 +139,12 @@ config TEE
 	  to access real TEE via one of TEE mediators implemented in XEN.
 
 source "arch/arm/tee/Kconfig"
+
+config STATIC_SHM
+	bool "Statically shared memory on a dom0less system" if UNSUPPORTED
+	depends on STATIC_MEMORY
+	help
+	  This option enables statically shared memory on a dom0less system.
 
 endmenu
 
@@ -309,6 +315,27 @@ config ARM64_ERRATUM_1286807
 	  invalidated has been observed by other observers. The
 	  workaround repeats the TLBI+DSB operation for all the TLB flush
 	  operations.
+
+	  If unsure, say Y.
+
+config ARM64_ERRATUM_1508412
+	bool "Cortex-A77: 1508412: possible deadlock on sequence of NC/Device load and store exclusive or PAR read"
+	default y
+	depends on ARM_64
+	help
+	  This option adds a workaround for Arm Cortex-A77 erratum 1508412.
+
+	  Affected Cortex-A77 cores (r0p0, r1p0) could deadlock on a sequence
+	  of a store-exclusive or read of PAR_EL1 and a load with device or
+	  non-cacheable memory attributes. The workaround depends on a firmware
+	  counterpart.
+
+	  Xen guests must also have the workaround implemented or they can
+	  deadlock the system.
+
+	  Work around the issue by inserting DMB SY barriers around PAR_EL1
+	  register reads and warning Xen users. The DMB barrier is sufficient
+	  to prevent a speculative PAR_EL1 read.
 
 	  If unsure, say Y.
 
