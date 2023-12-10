@@ -1029,13 +1029,6 @@ void __init noreturn __start_xen(unsigned long mbi_p)
                mbi->mods_count);
     }
 
-    if ( sl_status )
-        if ( mbi->mods_count > 2 )
-        {
-            mbi->mods_count = 2;
-            printk("Excessive multiboot modules for slaunch - limiting to 2\n");
-        }
-
     bitmap_fill(module_map, mbi->mods_count);
     __clear_bit(0, module_map); /* Dom0 kernel is always first */
 
@@ -1730,9 +1723,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     mmio_ro_ranges = rangeset_new(NULL, "r/o mmio ranges",
                                   RANGESETF_prettyprint_hex);
 
-    /* TODO: XSM policies are not supported by slaunch yet. */
-    if ( sl_status == 0 )
-        xsm_multiboot_init(module_map, mbi);
+    xsm_multiboot_init(module_map, mbi);
 
     /*
      * IOMMU-related ACPI table parsing may require some of the system domains
@@ -1801,9 +1792,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     init_IRQ();
 
-    /* TODO: Microcode updates are not supported by slaunch yet. */
-    if ( sl_status == 0 )
-        microcode_grab_module(module_map, mbi);
+    microcode_grab_module(module_map, mbi);
 
     timer_init();
 
