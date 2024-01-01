@@ -20,6 +20,9 @@ PATH_LIBXENCTRL = XEN_ROOT + "/tools/libs/ctrl"
 PATH_LIBXENGUEST = XEN_ROOT + "/tools/libs/guest"
 PATH_XENSTORE = XEN_ROOT + "/tools/libs/store"
 
+if "-D_FORTIFY_SOURCE=" in os.environ.get("CFLAGS", ""):
+    os.environ["CFLAGS"] = "-Wp,-U_FORTIFY_SOURCE " + os.environ["CFLAGS"]
+
 xc = Extension("xc",
                extra_compile_args = extra_compile_args,
                include_dirs       = [ PATH_XEN,

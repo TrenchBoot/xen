@@ -513,7 +513,7 @@ choice of `dom0-kernel` is deprecated and not supported by all Dom0 kernels.
   for `xen`.  It is a boolean for `hwp`.
 * `hwp` selects Hardware-Controlled Performance States (HWP) on supported Intel
   hardware.  HWP is a Skylake+ feature which provides better CPU power
-  management.  The default is disabled.  If `hwp` is selected, but hardware
+  management.  The default is enabled.  If `hwp` is selected, but hardware
   support is not available, Xen will fallback to cpufreq=xen.
 * `<hdc>` is a boolean to enable Hardware Duty Cycling (HDC).  HDC enables the
   processor to autonomously force physical package components into idle state.

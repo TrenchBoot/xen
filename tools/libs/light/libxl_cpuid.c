@@ -415,6 +415,7 @@ int libxl_cpuid_parse_config_xend(libxl_cpuid_policy_list *policy,
                                   const char* str)
 {
     char *endptr;
+    const char *endptrc;
     unsigned long value;
     uint32_t leaf, subleaf = XEN_CPUID_INPUT_UNUSED;
     struct xc_xend_cpuid *entry;
@@ -444,25 +445,25 @@ int libxl_cpuid_parse_config_xend(libxl_cpuid_policy_list *policy,
             return 4;
         }
         value = str[1] - 'a';
-        endptr = strchr(str, '=');
-        if (value > 3 || endptr == NULL) {
+        endptrc = strchr(str, '=');
+        if (value > 3 || endptrc == NULL) {
             return 4;
         }
-        str = endptr + 1;
-        endptr = strchr(str, ',');
-        if (endptr == NULL) {
-            endptr = strchr(str, 0);
+        str = endptrc + 1;
+        endptrc = strchr(str, ',');
+        if (endptrc == NULL) {
+            endptrc = strchr(str, 0);
         }
-        if (endptr - str != 32) {
+        if (endptrc - str != 32) {
             return 5;
         }
         entry->policy[value] = calloc(32 + 1, 1);
         strncpy(entry->policy[value], str, 32);
         entry->policy[value][32] = 0;
-        if (*endptr == 0) {
+        if (*endptrc == 0) {
             break;
         }
-        for (str = endptr + 1; *str == ' ' || *str == '\n'; str++);
+        for (str = endptrc + 1; *str == ' ' || *str == '\n'; str++);
     }
     return 0;
 }

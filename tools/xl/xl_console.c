@@ -27,10 +27,11 @@ int main_console(int argc, char **argv)
     uint32_t domid;
     int opt = 0, num = 0;
     libxl_console_type type = 0;
+    bool replace_escape = true;
     const char *console_names = "pv, serial, vuart";
     char* escape_character = NULL;
 
-    SWITCH_FOREACH_OPT(opt, "n:t:e:", NULL, "console", 1) {
+    SWITCH_FOREACH_OPT(opt, "n:t:e:r", NULL, "console", 1) {
     case 't':
         if (!strcmp(optarg, "pv"))
             type = LIBXL_CONSOLE_TYPE_PV;
@@ -48,8 +49,12 @@ int main_console(int argc, char **argv)
         break;
     case 'e':
         escape_character = optarg;
+    case 'r':
+        replace_escape = false;
         break;
     }
+
+    setenv("XEN_CONSOLE_REPLACE_ESCAPE", replace_escape ? "1" : "0", 1);
 
     domid = find_domain(argv[optind]);
     if (!type)

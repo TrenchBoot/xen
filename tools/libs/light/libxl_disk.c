@@ -57,11 +57,12 @@ static void disk_eject_xswatch_callback(libxl__egc *egc, libxl__ev_xswatch *w,
            "[a-z]/%*d/%*d",
            &disk->backend_domid, backend_type);
     if (!strcmp(backend_type, "tap") ||
-        !strcmp(backend_type, "vbd") ||
         !strcmp(backend_type, "vbd3")) {
         disk->backend = LIBXL_DISK_BACKEND_TAP;
     } else if (!strcmp(backend_type, "qdisk")) {
         disk->backend = LIBXL_DISK_BACKEND_QDISK;
+    } else if (!strcmp(backend_type, "vbd")) {
+        disk->backend = LIBXL_DISK_BACKEND_PHY;
     } else {
         disk->backend = LIBXL_DISK_BACKEND_UNKNOWN;
     }

@@ -151,6 +151,18 @@ bool __read_mostly machine_to_phys_mapping_valid;
 struct rangeset *__read_mostly mmio_ro_ranges;
 
 static uint32_t base_disallow_mask;
+
+/* Handling sub-page read-only MMIO regions */
+struct subpage_ro_range {
+    struct list_head list;
+    mfn_t mfn;
+    void __iomem *mapped;
+    DECLARE_BITMAP(ro_elems, PAGE_SIZE / MMIO_RO_SUBPAGE_GRAN);
+};
+
+static LIST_HEAD_RO_AFTER_INIT(subpage_ro_ranges);
+static DEFINE_SPINLOCK(subpage_ro_lock);
+
 /* Global bit is allowed to be set on L1 PTEs. Intended for user mappings. */
 #define L1_DISALLOW_MASK ((base_disallow_mask | _PAGE_GNTTAB) & ~_PAGE_GLOBAL)
 
@@ -4690,6 +4702,61 @@ static int cf_check handle_iomem_range(
     return err || s > e ? err : _handle_iomem_range(s, e, p);
 }
 
+static int get_mfn_from_pfn(XEN_GUEST_HANDLE(xen_get_mfn_from_pfn_t) arg)
+{
+    struct xen_get_mfn_from_pfn cmd_info;
+    struct domain *d;
+    int rc=0, i;
+    xen_pfn_t *pfns = NULL;
+    xen_pfn_t pfn;
+    struct p2m_domain *p2m;
+    p2m_type_t t;
+
+    if ( !is_hardware_domain(current->domain) )
+        return -EPERM;
+
+    if ( copy_from_guest(&cmd_info, arg, 1) )
+        return -EFAULT;
+
+    d = rcu_lock_domain_by_any_id(cmd_info.domid);
+    if ( d == NULL )
+        return -ESRCH;
+
+    /* sanity check for security */
+    if (cmd_info.nr_pfns > 2048 )
+        return -ENOMEM;
+
+    pfns = xmalloc_array(xen_pfn_t, cmd_info.nr_pfns);
+    if (pfns == NULL)
+        return -ENOMEM;
+
+    if (copy_from_guest(pfns, cmd_info.pfn_list, cmd_info.nr_pfns)){
+        rc = -EFAULT;
+        goto out;
+    }
+
+    p2m = p2m_get_hostp2m(d);
+    for(i=0; i < cmd_info.nr_pfns; i++){
+        pfn = pfns[i];
+        pfns[i] = mfn_x(get_gfn_query(d, pfn, &t));
+		if(pfns[i] == mfn_x(INVALID_MFN)){
+			rc = -EINVAL;
+			goto out;
+		}
+		put_gfn(d, pfn);
+    }
+
+    if (copy_to_guest(cmd_info.pfn_list, pfns, cmd_info.nr_pfns)){
+        rc = -EFAULT;
+        goto out;
+    }
+
+out:
+    rcu_unlock_domain(d);
+    xfree(pfns);
+    return rc;
+}
+
 long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     int rc;
@@ -4900,12 +4967,268 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     }
 #endif
 
+#ifdef __x86_64__
+    case XENMEM_get_sharing_freed_pages:
+        return mem_sharing_get_nr_saved_mfns();
+#endif
+
+    case XENMEM_get_mfn_from_pfn:
+        return get_mfn_from_pfn(guest_handle_cast(arg, xen_get_mfn_from_pfn_t));
+        break;
+
     default:
         return subarch_memory_op(cmd, arg);
     }
 
     return rc;
 }
+
+static struct subpage_ro_range *subpage_mmio_find_page(mfn_t mfn)
+{
+    struct subpage_ro_range *entry;
+
+    list_for_each_entry(entry, &subpage_ro_ranges, list)
+        if ( mfn_eq(entry->mfn, mfn) )
+            return entry;
+
+    return NULL;
+}
+
+/*
+ * Mark part of the page as R/O.
+ * Returns:
+ * - 0 on success - first range in the page
+ * - 1 on success - subsequent range in the page
+ * - <0 on error
+ */
+static int __init subpage_mmio_ro_add_page(
+    mfn_t mfn,
+    unsigned int offset_s,
+    unsigned int offset_e)
+{
+    struct subpage_ro_range *entry = NULL;
+    bool new_entry = false;
+    unsigned int i;
+
+    entry = subpage_mmio_find_page(mfn);
+    if ( !entry )
+    {
+        entry = xzalloc(struct subpage_ro_range);
+        if ( !entry )
+            return -ENOMEM;
+        entry->mfn = mfn;
+        list_add(&entry->list, &subpage_ro_ranges);
+        new_entry = true;
+    }
+
+    for ( i = offset_s; i <= offset_e; i += MMIO_RO_SUBPAGE_GRAN )
+    {
+        bool oldbit = __test_and_set_bit(i / MMIO_RO_SUBPAGE_GRAN,
+                                         entry->ro_elems);
+        ASSERT(!oldbit);
+    }
+
+    return !new_entry;
+}
+
+static void __init subpage_mmio_ro_remove_page(
+    mfn_t mfn,
+    unsigned int offset_s,
+    unsigned int offset_e)
+{
+    struct subpage_ro_range *entry = NULL;
+    unsigned int i;
+
+    entry = subpage_mmio_find_page(mfn);
+    if ( !entry )
+        return;
+
+    for ( i = offset_s; i <= offset_e; i += MMIO_RO_SUBPAGE_GRAN )
+        __clear_bit(i / MMIO_RO_SUBPAGE_GRAN, entry->ro_elems);
+
+    if ( !bitmap_empty(entry->ro_elems, PAGE_SIZE / MMIO_RO_SUBPAGE_GRAN) )
+        return;
+
+    list_del(&entry->list);
+    if ( entry->mapped )
+        iounmap(entry->mapped);
+    xfree(entry);
+}
+
+int __init subpage_mmio_ro_add(
+    paddr_t start,
+    size_t size)
+{
+    mfn_t mfn_start = maddr_to_mfn(start);
+    paddr_t end = start + size - 1;
+    mfn_t mfn_end = maddr_to_mfn(end);
+    unsigned int offset_end = 0;
+    int rc;
+    bool subpage_start, subpage_end;
+
+    ASSERT(IS_ALIGNED(start, MMIO_RO_SUBPAGE_GRAN));
+    ASSERT(IS_ALIGNED(size, MMIO_RO_SUBPAGE_GRAN));
+    if ( !IS_ALIGNED(start, MMIO_RO_SUBPAGE_GRAN) ||
+         !IS_ALIGNED(size, MMIO_RO_SUBPAGE_GRAN) )
+        return -EINVAL;
+
+    if ( !size )
+        return 0;
+
+    if ( mfn_eq(mfn_start, mfn_end) )
+    {
+        /* Both starting and ending parts handled at once */
+        subpage_start = PAGE_OFFSET(start) || PAGE_OFFSET(end) != PAGE_SIZE - 1;
+        subpage_end = false;
+    }
+    else
+    {
+        subpage_start = PAGE_OFFSET(start);
+        subpage_end = PAGE_OFFSET(end) != PAGE_SIZE - 1;
+    }
+
+    if ( subpage_start )
+    {
+        offset_end = mfn_eq(mfn_start, mfn_end) ?
+                     PAGE_OFFSET(end) :
+                     (PAGE_SIZE - 1);
+        rc = subpage_mmio_ro_add_page(mfn_start,
+                                      PAGE_OFFSET(start),
+                                      offset_end);
+        if ( rc < 0 )
+            goto err_unlock;
+        /* Check if not marking R/W part of a page intended to be fully R/O */
+        ASSERT(rc || !rangeset_contains_singleton(mmio_ro_ranges,
+                                                  mfn_x(mfn_start)));
+    }
+
+    if ( subpage_end )
+    {
+        rc = subpage_mmio_ro_add_page(mfn_end, 0, PAGE_OFFSET(end));
+        if ( rc < 0 )
+            goto err_unlock_remove;
+        /* Check if not marking R/W part of a page intended to be fully R/O */
+        ASSERT(rc || !rangeset_contains_singleton(mmio_ro_ranges,
+                                                  mfn_x(mfn_end)));
+    }
+
+    rc = rangeset_add_range(mmio_ro_ranges, mfn_x(mfn_start), mfn_x(mfn_end));
+    if ( rc )
+        goto err_remove;
+
+    return 0;
+
+ err_remove:
+    if ( subpage_end )
+        subpage_mmio_ro_remove_page(mfn_end, 0, PAGE_OFFSET(end));
+ err_unlock_remove:
+    if ( subpage_start )
+        subpage_mmio_ro_remove_page(mfn_start, PAGE_OFFSET(start), offset_end);
+ err_unlock:
+    return rc;
+}
+
+static void __iomem *subpage_mmio_map_page(
+    struct subpage_ro_range *entry)
+{
+    void __iomem *mapped_page;
+
+    if ( entry->mapped )
+        return entry->mapped;
+
+    mapped_page = ioremap(mfn_to_maddr(entry->mfn), PAGE_SIZE);
+
+    spin_lock(&subpage_ro_lock);
+    /* Re-check under the lock */
+    if ( entry->mapped )
+    {
+        spin_unlock(&subpage_ro_lock);
+        if ( mapped_page )
+            iounmap(mapped_page);
+        return entry->mapped;
+    }
+
+    entry->mapped = mapped_page;
+    spin_unlock(&subpage_ro_lock);
+    return entry->mapped;
+}
+
+static void subpage_mmio_write_emulate(
+    mfn_t mfn,
+    unsigned int offset,
+    const void *data,
+    unsigned int len)
+{
+    struct subpage_ro_range *entry;
+    volatile void __iomem *addr;
+
+    entry = subpage_mmio_find_page(mfn);
+    if ( !entry )
+        /* Do not print message for pages without any writable parts. */
+        return;
+
+    if ( test_bit(offset / MMIO_RO_SUBPAGE_GRAN, entry->ro_elems) )
+    {
+ write_ignored:
+        gprintk(XENLOG_WARNING,
+                "ignoring write to R/O MMIO 0x%"PRI_mfn"%03x len %u\n",
+                mfn_x(mfn), offset, len);
+        return;
+    }
+
+    addr = subpage_mmio_map_page(entry);
+    if ( !addr )
+    {
+        gprintk(XENLOG_ERR,
+                "Failed to map page for MMIO write at 0x%"PRI_mfn"%03x\n",
+                mfn_x(mfn), offset);
+        return;
+    }
+
+    switch ( len )
+    {
+    case 1:
+        writeb(*(const uint8_t*)data, addr);
+        break;
+    case 2:
+        writew(*(const uint16_t*)data, addr);
+        break;
+    case 4:
+        writel(*(const uint32_t*)data, addr);
+        break;
+    case 8:
+        writeq(*(const uint64_t*)data, addr);
+        break;
+    default:
+        /* mmio_ro_emulated_write() already validated the size */
+        ASSERT_UNREACHABLE();
+        goto write_ignored;
+    }
+}
+
+#ifdef CONFIG_HVM
+bool subpage_mmio_write_accept(mfn_t mfn, unsigned long gla)
+{
+    unsigned int offset = PAGE_OFFSET(gla);
+    const struct subpage_ro_range *entry;
+
+    entry = subpage_mmio_find_page(mfn);
+    if ( !entry )
+        return false;
+
+    if ( !test_bit(offset / MMIO_RO_SUBPAGE_GRAN, entry->ro_elems) )
+    {
+        /*
+         * We don't know the write size at this point yet, so it could be
+         * an unaligned write, but accept it here anyway and deal with it
+         * later.
+         */
+        return true;
+    }
+
+    return false;
+}
+#endif
 
 int cf_check mmio_ro_emulated_write(
     enum x86_segment seg,
@@ -4924,6 +5247,9 @@ int cf_check mmio_ro_emulated_write(
                 mmio_ro_ctxt->cr2, offset, bytes);
         return X86EMUL_UNHANDLEABLE;
     }
+
+    subpage_mmio_write_emulate(mmio_ro_ctxt->mfn, PAGE_OFFSET(offset),
+                               p_data, bytes);
 
     return X86EMUL_OKAY;
 }
@@ -6368,15 +6694,78 @@ unsigned long get_upper_mfn_bound(void)
     return min(max_mfn, 1UL << (paddr_bits - PAGE_SHIFT)) - 1;
 }
 
+
+/*
+ * A bunch of static assertions to check that the XEN_MSR_PAT is valid
+ * and consistent with the _PAGE_* macros, and that _PAGE_WB is zero.
+ */
 static void __init __maybe_unused build_assertions(void)
 {
     /*
-     * If this trips, any guests that blindly rely on the public API in xen.h
-     * (instead of reading the PAT from Xen, as Linux 3.19+ does) will be
-     * broken.  Furthermore, live migration of PV guests between Xen versions
-     * using different PATs will not work.
+     * _PAGE_WB must be zero for several reasons, not least because Linux
+     * assumes it.
      */
-    BUILD_BUG_ON(XEN_MSR_PAT != 0x050100070406ULL);
+    BUILD_BUG_ON(_PAGE_WB);
+
+    /* A macro to convert from cache attributes to actual cacheability */
+#define PAT_ENTRY(v) (0xFF & (XEN_MSR_PAT >> (8 * (v))))
+
+    /* Validate at compile-time that v is a valid value for a PAT entry */
+#define CHECK_PAT_ENTRY_VALUE(v)                                               \
+    BUILD_BUG_ON((v) < 0 || (v) > 7 ||                                         \
+                 (v) == X86_MT_RSVD_2 || (v) == X86_MT_RSVD_3)
+
+    /* Validate at compile-time that PAT entry v is valid */
+#define CHECK_PAT_ENTRY(v) do {                                                \
+    BUILD_BUG_ON((v) < 0 || (v) > 7);                                          \
+    CHECK_PAT_ENTRY_VALUE(PAT_ENTRY(v));                                       \
+} while (0);
+
+    /*
+     * If one of these trips, the corresponding entry in XEN_MSR_PAT is invalid.
+     * This would cause Xen to crash (with #GP) at startup.
+     */
+    CHECK_PAT_ENTRY(0);
+    CHECK_PAT_ENTRY(1);
+    CHECK_PAT_ENTRY(2);
+    CHECK_PAT_ENTRY(3);
+    CHECK_PAT_ENTRY(4);
+    CHECK_PAT_ENTRY(5);
+    CHECK_PAT_ENTRY(6);
+    CHECK_PAT_ENTRY(7);
+
+#undef CHECK_PAT_ENTRY
+#undef CHECK_PAT_ENTRY_VALUE
+
+    /* Macro version of page_flags_to_cacheattr(), for use in BUILD_BUG_ON()s */
+#define PAGE_FLAGS_TO_CACHEATTR(page_value)                                    \
+    ((((page_value) >> 5) & 4) | (((page_value) >> 3) & 3))
+
+    /* Check that a PAT-related _PAGE_* macro is correct */
+#define CHECK_PAGE_VALUE(page_value) do {                                      \
+    /* Check that the _PAGE_* macros only use bits from PAGE_CACHE_ATTRS */    \
+    BUILD_BUG_ON(((_PAGE_##page_value) & PAGE_CACHE_ATTRS) !=                  \
+                  (_PAGE_##page_value));                                       \
+    /* Check that the _PAGE_* are consistent with XEN_MSR_PAT */               \
+    BUILD_BUG_ON(PAT_ENTRY(PAGE_FLAGS_TO_CACHEATTR(_PAGE_##page_value)) !=     \
+                 (X86_MT_##page_value));                                       \
+} while (0)
+
+    /*
+     * If one of these trips, the corresponding _PAGE_* macro is inconsistent
+     * with XEN_MSR_PAT.  This would cause Xen to use incorrect cacheability
+     * flags, with results that are undefined and probably harmful.
+     */
+    CHECK_PAGE_VALUE(WT);
+    CHECK_PAGE_VALUE(WB);
+    CHECK_PAGE_VALUE(WC);
+    CHECK_PAGE_VALUE(UC);
+    CHECK_PAGE_VALUE(UCM);
+    CHECK_PAGE_VALUE(WP);
+
+#undef CHECK_PAGE_VALUE
+#undef PAGE_FLAGS_TO_CACHEATTR
+#undef PAT_ENTRY
 }
 
 /*

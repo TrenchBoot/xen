@@ -411,6 +411,7 @@
 #define MSR_AMD64_LS_CFG		0xc0011020U
 #define MSR_AMD64_IC_CFG		0xc0011021U
 #define MSR_AMD64_DC_CFG		0xc0011022U
+#define MSR_AMD64_FP_CFG		0xc0011028U
 #define MSR_AMD64_DE_CFG		0xc0011029U
 #define AMD64_DE_CFG_LFENCE_SERIALISE	(_AC(1, ULL) << 1)
 #define MSR_AMD64_EX_CFG		0xc001102cU
@@ -701,5 +702,14 @@
 #define MSR_PKGC8_IRTL			0x00000633
 #define MSR_PKGC9_IRTL			0x00000634
 #define MSR_PKGC10_IRTL			0x00000635
+
+/* Package C-state residency counters */
+#define MSR_PKG_C2_RESIDENCY            0x0000060d
+#define MSR_PKG_C3_RESIDENCY            0x000003f8
+#define MSR_PKG_C6_RESIDENCY            0x000003f9
+#define MSR_PKG_C7_RESIDENCY            0x000003fa
+#define MSR_PKG_C8_RESIDENCY            0x00000630
+#define MSR_PKG_C9_RESIDENCY            0x00000631
+#define MSR_PKG_C10_RESIDENCY           0x00000632
 
 #endif /* __ASM_MSR_INDEX_H */
