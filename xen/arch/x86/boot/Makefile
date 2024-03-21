@@ -2,7 +2,7 @@ obj-bin-y += head.o
 
 obj32 := cmdline.32.o
 obj32 += reloc.32.o
-obj32 += txt_early.32.o
+obj32 += slaunch_early.32.o
 obj32 += tpm_early.32.o
 
 nocov-y   += $(obj32)
