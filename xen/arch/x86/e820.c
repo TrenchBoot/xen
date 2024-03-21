@@ -501,7 +501,7 @@ static void __init machine_specific_memory_setup(struct e820map *raw)
     uint64_t top_of_ram, size;
     unsigned int i;
 
-    if ( slaunch_active )
+    if ( slaunch_active && boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
         txt_restore_mtrrs(e820_verbose);
 
     sanitize_e820_map(raw->map, &raw->nr_map);

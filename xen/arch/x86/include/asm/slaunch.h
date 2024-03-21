@@ -11,6 +11,8 @@
 #include <xen/slr-table.h>
 #include <xen/types.h>
 
+#include <asm/x86-vendors.h>
+
 #define DRTM_LOC                   2
 #define DRTM_CODE_PCR              17
 #define DRTM_DATA_PCR              18
@@ -49,6 +51,34 @@ static bool slaunch_active = false;
  * instead of mapping where this points to.
  */
 extern uint32_t slaunch_slrt;
+
+#ifdef __EARLY_SLAUNCH__
+
+static inline bool slaunch_is_amd_drtm(void)
+{
+    /*
+     * asm/processor.h can't be included in early code, which means neither
+     * cpuid() function nor boot_cpu_data can be used here.
+     */
+    uint32_t eax, ebx, ecx, edx;
+    asm volatile ( "cpuid"
+          : "=a" (eax), "=b" (ebx), "=c" (ecx), "=d" (edx)
+          : "0" (0), "c" (0) );
+    return ebx == X86_VENDOR_AMD_EBX
+        && ecx == X86_VENDOR_AMD_ECX
+        && edx == X86_VENDOR_AMD_EDX;
+}
+
+#else   /* __EARLY_SLAUNCH__ */
+
+#include <asm/cpufeature.h>
+
+static inline bool slaunch_is_amd_drtm(void)
+{
+    return boot_cpu_data.x86_vendor == X86_VENDOR_AMD;
+}
+
+#endif  /* __EARLY_SLAUNCH__ */
 
 /*
  * Retrieves pointer to SLRT.  Checks table's validity and maps it as necessary.
