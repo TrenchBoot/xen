@@ -29,7 +29,7 @@ void __init map_txt_mem_regions(void)
 
     map_l2(txt_heap_base, txt_heap_size);
 
-    find_evt_log(__va(txt_find_slrt()), &evt_log_addr, &evt_log_size);
+    find_evt_log(__va(slaunch_slrt), &evt_log_addr, &evt_log_size);
     map_l2((unsigned long)evt_log_addr, evt_log_size);
     if ( evt_log_addr != NULL )
         map_l2((unsigned long)evt_log_addr, evt_log_size);
@@ -53,7 +53,7 @@ void __init protect_txt_mem_regions(void)
     BUG_ON(rc == 0);
 
     /* TXT TPM Event Log */
-    find_evt_log(__va(txt_find_slrt()), &evt_log_addr, &evt_log_size);
+    find_evt_log(__va(slaunch_slrt), &evt_log_addr, &evt_log_size);
     if ( evt_log_addr != NULL ) {
         printk("SLAUNCH: reserving event log (%#lx - %#lx)\n",
                (uint64_t)evt_log_addr,
