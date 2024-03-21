@@ -77,6 +77,16 @@ create_log_event12(struct txt_ev_log_container_12 *evt_log,
     if (evt_log == NULL)
         return log_hashes;
 
+    if ( slaunch_is_amd_drtm() )
+    {
+        /*
+         * On AMD, TXT-compatible structure is stored as vendor data of
+         * TCG-defined event log header.
+         */
+        struct tpm1_spec_id_event *spec_id = (void *)evt_log;
+        evt_log = (struct txt_ev_log_container_12 *)&spec_id->vendorInfo[0];
+    }
+
     new_entry = (void *)evt_log + evt_log->NextEventOffset;
 
     /*
@@ -111,6 +121,22 @@ find_evt_log_ext_data(struct tpm2_spec_id_event *evt_log)
 {
     struct txt_os_sinit_data *os_sinit;
     struct txt_ext_data_element *ext_data;
+
+    if ( slaunch_is_amd_drtm() )
+    {
+        /*
+         * Event log pointer is defined by TXT specification, but
+         * secure-kernel-loader provides a compatible structure in vendor data
+         * of the log.
+         */
+        uint8_t *data_size =
+            (uint8_t *)&evt_log->digestSizes[evt_log->digestCount];
+        if ( *data_size != sizeof(struct heap_event_log_pointer_element2_1) )
+            return NULL;
+
+        /* Vendor data directly follows a single-byte size. */
+        return (struct heap_event_log_pointer_element2_1 *)(data_size + 1);
+    }
 
     os_sinit = txt_start(__va(txt_read(TXTCR_HEAP_BASE)), TXT_OS2SINIT);
     ext_data = txt_find_ext_data_element(os_sinit,
