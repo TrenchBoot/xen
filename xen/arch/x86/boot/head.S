@@ -356,10 +356,14 @@ cs32_switch:
 
 #if CONFIG_SLAUNCH
         /*
-         * Entry point for TrenchBoot Secure Launch on Intel TXT platforms.
+         * Entry point for TrenchBoot Secure Launch, common for Intel TXT and
+         * AMD Secure Startup, but state is slightly different.
+         *
+         * On Intel
+         * --------
          *
          * CPU is in 32b protected mode with paging disabled. On entry:
-         * - %ebx = %eip = MLE entry point,
+         * - %ebx = %eip = this entry point,
          * - stack pointer is undefined,
          * - CS is flat 4GB code segment,
          * - DS, ES, SS, FS and GS are undefined according to TXT SDG, but this
@@ -380,13 +384,36 @@ cs32_switch:
          *   writing a non-zero value at a MONITORed address or via
          *   GETSEC[WAKEUP] instruction, depending on which is supported by a
          *   given SINIT ACM
+         *
+         * On AMD (as implemented by TrenchBoot's secure-kernel-loader or SKL)
+         * -------------------------------------------------------------------
+         *
+         * CPU is in 32b protected mode with paging disabled. On entry:
+         * - %ebx = %eip = this entry point,
+         * - %ebp holds base address of SKL
+         * - stack pointer is treated as undefined for parity with TXT,
+         * - CS is flat 4GB code segment,
+         * - DS, ES, SS are flat 4GB data segments, but treated as undefined for
+         *   parity with TXT.
+         *
+         * Additional restrictions:
+         * - interrupts (including NMIs and SMIs) are disabled and must be
+         *   enabled later
+         * - APs must be brought up by SIPI without an INIT
          */
 slaunch_stub_entry:
         /* Calculate the load base address. */
         mov     %ebx, %esi
         sub     $sym_offs(slaunch_stub_entry), %esi
 
-        /* Mark Secure Launch boot protocol and jump to common entry. */
+        /* On AMD, %ebp holds the base address of SLB, save it for later. */
+        mov     %ebp, %ebx
+
+        /*
+         * Mark Secure Launch boot protocol and jump to common entry. Note that
+         * all general purpose registers except %ebx and %esi are clobbered
+         * between here and .Lslaunch_proto.
+         */
         mov     $SLAUNCH_BOOTLOADER_MAGIC, %eax
         jmp     .Lset_stack
 #endif /* CONFIG_SLAUNCH */
@@ -522,15 +549,18 @@ __start:
         sub     $SL_EIR_size, %esp
 
         push    %esp                              /* pointer to output structure */
+        push    %ebx                              /* Slaunch parameter on AMD */
         mov     $sym_offs(__2M_rwdata_end), %ecx  /* end of target image */
         mov     $sym_offs(_start), %edx           /* target base address */
         mov     %esi, %eax                        /* load base address */
         /*
-         * slaunch_early_init(load/eax, tgt/edx, tgt_end/ecx, ret/stk) using
-         * fastcall calling convention.
+         * slaunch_early_init(load/eax, tgt/edx, tgt_end/ecx,
+         *                     slaunch/stk, ret/stk)
+         *
+         * Uses fastcall calling convention.
          */
         call    slaunch_early_init
-        add     $4, %esp                         /* pop the fourth parameter */
+        add     $8, %esp                         /* pop last two parameters */
 
         /* Move outputs of slaunch_early_init() from the stack. */
         pop     %ebx                  /* store physical MBI address in EBX where
