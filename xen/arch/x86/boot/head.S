@@ -351,10 +351,12 @@ cs32_switch:
         jmp     *%edi
 
         /*
-         * Entry point for TrenchBoot Secure Launch on Intel TXT platforms.
+         * Entry point for TrenchBoot Secure Launch, common for Intel TXT and
+         * AMD Secure Startup, but state is slightly different.
          *
+         * On Intel:
          * CPU is in 32b protected mode with paging disabled. On entry:
-         * - %ebx = %eip = MLE entry point,
+         * - %ebx = %eip = this entry point,
          * - stack pointer is undefined,
          * - CS is flat 4GB code segment,
          * - DS, ES, SS, FS and GS are undefined.
@@ -368,13 +370,34 @@ cs32_switch:
          * - trying to enter real mode results in reset
          * - APs must be brought up by MONITOR or GETSEC[WAKEUP], depending on
          *   which is supported by a given SINIT ACM
+         *
+         * On AMD (as implemented by TrenchBoot's SKL):
+         * CPU is in 32b protected mode with paging disabled. On entry:
+         * - %ebx = %eip = this entry point,
+         * - %ebp holds base address of SKL
+         * - stack pointer is treated as undefined for parity with TXT,
+         * - CS is flat 4GB code segment,
+         * - DS, ES, SS are flat 4GB data segments, but treated as undefined for
+         *   parity with TXT.
+         *
+         * Additional restrictions:
+         * - interrupts (including NMIs and SMIs) are disabled and must be
+         *   enabled later
+         * - APs must be brought up by SIPI without an INIT
          */
 slaunch_stub_entry:
         /* Calculate the load base address. */
         mov     %ebx, %esi
         sub     $sym_offs(slaunch_stub_entry), %esi
 
-        /* Mark Secure Launch boot protocol and jump to common entry. */
+        /* On AMD, %ebp holds the base address of SLB, save it for later. */
+        mov     %ebp, %ebx
+
+        /*
+         * Mark Secure Launch boot protocol and jump to common entry. Note that
+         * all general purpose registers except %ebx and %esi are clobbered
+         * between here and .Lslaunch_proto.
+         */
         mov     $SLAUNCH_BOOTLOADER_MAGIC, %eax
         jmp     .Lset_stack
 
@@ -497,10 +520,12 @@ __start:
         sub     $8, %esp
 
         push    %esp                             /* pointer to output structure */
+        push    %ebx                             /* Slaunch parameter on AMD */
         lea     sym_offs(__2M_rwdata_end), %ecx  /* end of target image */
         lea     sym_offs(_start), %edx           /* target base address */
         mov     %esi, %eax                       /* load base address */
-        /* slaunch_early_tests(load/eax, tgt/edx, tgt_end/ecx, ret/stk) using fastcall. */
+        /* slaunch_early_tests(load/eax, tgt/edx, tgt_end/ecx,
+                               slaunch/stk, ret/stk) using fastcall. */
         call    slaunch_early_tests
 
         /* Move outputs of slaunch_early_tests() from stack into registers. */
