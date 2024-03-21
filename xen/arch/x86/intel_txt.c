@@ -15,11 +15,7 @@ static uint64_t __initdata txt_heap_base, txt_heap_size;
 
 void __init map_txt_mem_regions(void)
 {
-    void *evt_log_addr;
-    uint32_t evt_log_size;
-
     map_l2(TXT_PRIV_CONFIG_REGS_BASE, NR_TXT_CONFIG_SIZE);
-    map_l2(TPM_TIS_BASE, TPM_TIS_SIZE);
 
     txt_heap_base = read_txt_reg(TXTCR_HEAP_BASE);
     BUG_ON(txt_heap_base == 0);
@@ -28,20 +24,11 @@ void __init map_txt_mem_regions(void)
     BUG_ON(txt_heap_size == 0);
 
     map_l2(txt_heap_base, txt_heap_size);
-
-    find_evt_log(__va(slaunch_slrt), &evt_log_addr, &evt_log_size);
-    map_l2((unsigned long)evt_log_addr, evt_log_size);
-    if ( evt_log_addr != NULL )
-        map_l2((unsigned long)evt_log_addr, evt_log_size);
 }
 
 void __init protect_txt_mem_regions(void)
 {
     int rc;
-
-    void *evt_log_addr;
-    uint32_t evt_log_size;
-
     uint64_t sinit_base, sinit_size;
 
     /* TXT Heap */
@@ -51,17 +38,6 @@ void __init protect_txt_mem_regions(void)
     rc = reserve_e820_ram(&e820_raw, txt_heap_base,
                           txt_heap_base + txt_heap_size);
     BUG_ON(rc == 0);
-
-    /* TXT TPM Event Log */
-    find_evt_log(__va(slaunch_slrt), &evt_log_addr, &evt_log_size);
-    if ( evt_log_addr != NULL ) {
-        printk("SLAUNCH: reserving event log (%#lx - %#lx)\n",
-               (uint64_t)evt_log_addr,
-               (uint64_t)evt_log_addr + evt_log_size);
-        rc = reserve_e820_ram(&e820_raw, (uint64_t)evt_log_addr,
-                              (uint64_t)evt_log_addr + evt_log_size);
-        BUG_ON(rc == 0);
-    }
 
     sinit_base = read_txt_reg(TXTCR_SINIT_BASE);
     BUG_ON(sinit_base == 0);
