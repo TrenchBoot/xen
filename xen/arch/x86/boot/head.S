@@ -486,20 +486,34 @@ __start:
         jmp     trampoline_bios_setup
 
 .Lslaunch_proto:
+        /* Upon reaching here, CPU state mostly matches the one setup by the
+         * bootloader with ESP, ESI and EDX being clobbered above. */
+
         /* Save information that TrenchBoot slaunch was used. */
         movb    $1, sym_esi(slaunch_active)
 
+        /* Prepare space for output parameter of slaunch_early_tests(), which is
+         * a structure of two uint32_t fields. */
+        sub     $8, %esp
+
+        push    %esp                             /* pointer to output structure */
         lea     sym_offs(__2M_rwdata_end), %ecx  /* end of target image */
         lea     sym_offs(_start), %edx           /* target base address */
         mov     %esi, %eax                       /* load base address */
-        /* txt_early_tests(load/eax, tgt/edx, tgt_end/ecx) using fastcall. */
-        call    txt_early_tests
+        /* slaunch_early_tests(load/eax, tgt/edx, tgt_end/ecx, ret/stk) using fastcall. */
+        call    slaunch_early_tests
 
-        /*
-         * txt_early_tests() returns MBI address, pass it to tpm_extend_mbi()
-         * and store for later in EBX.
-         */
-        movl    %eax, %ebx
+        /* Move outputs of slaunch_early_tests() from stack into registers. */
+        pop     %eax  /* physical MBI address */
+        pop     %edx  /* physical SLRT address */
+
+        /* Save physical address of SLRT for C code. */
+        mov     %edx, sym_esi(slaunch_slrt)
+
+        /* Store MBI address in EBX where MB2 code expects it. */
+        mov     %eax, %ebx
+
+        /* tpm_extend_mbi(mbi/eax, slrt/edx) using fastcall. */
         call    tpm_extend_mbi
 
         /* Move magic number expected by Multiboot 2 to EAX and fall through. */
@@ -845,9 +859,9 @@ FUNC_LOCAL(reloc)
         .incbin "reloc.bin"
 END(reloc)
 
-FUNC_LOCAL(txt_early_tests)
-        .incbin "txt_early.bin"
-END(txt_early_tests)
+FUNC_LOCAL(slaunch_early_tests)
+        .incbin "slaunch_early.bin"
+END(slaunch_early_tests)
 
 FUNC_LOCAL(tpm_extend_mbi)
         .incbin "tpm_early.bin"
