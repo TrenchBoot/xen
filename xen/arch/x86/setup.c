@@ -994,6 +994,7 @@ void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
     unsigned long eb_start, eb_end;
     bool acpi_boot_table_init_done = false, relocated = false;
     bool vm_init_done = false;
+    bool can_broadcast = false;
     int ret;
     struct ns16550_defaults ns16550 = {
         .data_bits = 8,
@@ -1973,6 +1974,10 @@ void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
      */
     if ( !pv_shim )
     {
+        /* Broadcast only if all present CPUs are to be brought up. */
+        can_broadcast = park_offline_cpus || num_present_cpus() <= max_cpus;
+
+        /* Separate loop to make parallel AP bringup possible. */
         for_each_present_cpu ( i )
         {
             /* Set up cpu_to_node[]. */
@@ -1980,6 +1985,15 @@ void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
             /* Set up node_to_cpumask based on cpu_to_node[]. */
             numa_add_cpu(i);
 
+            if ( can_broadcast && smpboot_data[i].stack_base == NULL )
+                smpboot_data[i].stack_base = cpu_alloc_stack(i);
+        }
+
+        if ( can_broadcast )
+            smp_send_init_sipi_sipi_allbutself();
+
+        for_each_present_cpu ( i )
+        {
             if ( (park_offline_cpus || num_online_cpus() < max_cpus) &&
                  !cpu_online(i) )
             {

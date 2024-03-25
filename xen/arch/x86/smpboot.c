@@ -423,6 +423,7 @@ static int wakeup_secondary_cpu(
     unsigned int phys_apicid, unsigned long start_eip)
 {
     unsigned long send_status = 0, accept_status = 0;
+    unsigned int sh = 0;
     int maxlvt, timeout, i;
 
     /*
@@ -442,6 +443,10 @@ static int wakeup_secondary_cpu(
     if ( tboot_in_measured_env() && !tboot_wake_ap(phys_apicid, start_eip) )
         return 0;
 
+    /* Use destination shorthand for broadcasting IPIs during boot. */
+    if ( phys_apicid == BAD_APICID )
+        sh = APIC_DEST_ALLBUT;
+
     /*
      * Be paranoid about clearing APIC errors.
      */
@@ -455,7 +460,7 @@ static int wakeup_secondary_cpu(
         /*
          * Turn INIT on target chip via IPI
          */
-        apic_icr_write(APIC_INT_LEVELTRIG | APIC_INT_ASSERT | APIC_DM_INIT,
+        apic_icr_write(APIC_INT_LEVELTRIG | APIC_INT_ASSERT | APIC_DM_INIT | sh,
                        phys_apicid);
 
         if ( !x2apic_enabled )
@@ -472,7 +477,7 @@ static int wakeup_secondary_cpu(
 
             Dprintk("Deasserting INIT.\n");
 
-            apic_icr_write(APIC_INT_LEVELTRIG | APIC_DM_INIT, phys_apicid);
+            apic_icr_write(APIC_INT_LEVELTRIG | APIC_DM_INIT | sh, phys_apicid);
 
             Dprintk("Waiting for send to finish...\n");
             timeout = 0;
@@ -509,7 +514,7 @@ static int wakeup_secondary_cpu(
          * STARTUP IPI
          * Boot on the stack
          */
-        apic_icr_write(APIC_DM_STARTUP | (start_eip >> 12), phys_apicid);
+        apic_icr_write(APIC_DM_STARTUP | (start_eip >> 12) | sh, phys_apicid);
 
         if ( !x2apic_enabled )
         {
@@ -562,7 +567,6 @@ int alloc_cpu_id(void)
 static int do_boot_cpu(unsigned int apicid, int cpu)
 {
     int timeout, boot_error = 0, rc = 0;
-    unsigned long start_eip;
 
     /*
      * Save current MTRR state in case it was changed since early boot
@@ -570,21 +574,28 @@ static int do_boot_cpu(unsigned int apicid, int cpu)
      */
     mtrr_save_state();
 
-    start_eip = bootsym_phys(trampoline_realmode_entry);
+    /* Check if AP is already up. */
+    if ( smpboot_data[cpu].cpu_state != CPU_STATE_INIT )
+    {
+        /* This grunge runs the startup process for the targeted processor. */
+        unsigned long start_eip = bootsym_phys(trampoline_realmode_entry);
 
-    /* start_eip needs be page aligned, and below the 1M boundary. */
-    if ( start_eip & ~0xff000 )
-        panic("AP trampoline %#lx not suitably positioned\n", start_eip);
+        /* start_eip needs be page aligned, and below the 1M boundary. */
+        if ( start_eip & ~0xff000 )
+            panic("AP trampoline %#lx not suitably positioned\n", start_eip);
 
-    /* So we see what's up   */
-    if ( opt_cpu_info )
-        printk("Booting processor %d/%d eip %lx\n",
-               cpu, apicid, start_eip);
+        /* So we see what's up   */
+        if ( opt_cpu_info )
+            printk("Booting processor %d/%d eip %lx\n",
+                   cpu, apicid, start_eip);
 
-    /* This grunge runs the startup process for the targeted processor. */
+        /* mark "stuck" area as not stuck */
+        bootsym(trampoline_cpu_started) = 0;
+        smp_mb();
 
-    /* Starting actual IPI sequence... */
-    boot_error = wakeup_secondary_cpu(apicid, start_eip);
+        /* Starting actual IPI sequence... */
+        boot_error = wakeup_secondary_cpu(apicid, start_eip);
+    }
 
     if ( !boot_error )
     {
@@ -642,10 +653,6 @@ static int do_boot_cpu(unsigned int apicid, int cpu)
         cpu_exit_clear(cpu);
         rc = -EIO;
     }
-
-    /* mark "stuck" area as not stuck */
-    bootsym(trampoline_cpu_started) = 0;
-    smp_mb();
 
     return rc;
 }
@@ -1151,6 +1158,22 @@ static int cf_check cpu_smpboot_callback(
 static struct notifier_block cpu_smpboot_nfb = {
     .notifier_call = cpu_smpboot_callback
 };
+
+void __init smp_send_init_sipi_sipi_allbutself(void)
+{
+    unsigned long start_eip = bootsym_phys(trampoline_realmode_entry);
+
+    /* start_eip needs be page aligned, and below the 1M boundary. */
+    if ( start_eip & ~0xff000 )
+        panic("AP trampoline %#lx not suitably positioned\n", start_eip);
+
+    /* So we see what's up   */
+    if ( opt_cpu_info )
+        printk("Booting APs in parallel, eip %lx\n", start_eip);
+
+    /* Starting actual broadcast IPI sequence... */
+    wakeup_secondary_cpu(BAD_APICID, start_eip);
+}
 
 void __init smp_prepare_cpus(void)
 {
