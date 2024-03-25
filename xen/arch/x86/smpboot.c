@@ -423,7 +423,8 @@ void asmlinkage start_secondary(void *unused)
     startup_cpu_idle_loop();
 }
 
-static int wakeup_secondary_cpu(int phys_apicid, unsigned long start_eip)
+static int wakeup_secondary_cpu(
+    unsigned int phys_apicid, unsigned long start_eip)
 {
     unsigned long send_status = 0, accept_status = 0;
     int maxlvt, timeout, i;
@@ -562,7 +563,7 @@ int alloc_cpu_id(void)
     return (cpu < nr_cpu_ids) ? cpu : -ENODEV;
 }
 
-static int do_boot_cpu(int apicid, int cpu)
+static int do_boot_cpu(unsigned int apicid, int cpu)
 {
     int timeout, boot_error = 0, rc = 0;
     unsigned long start_eip;
@@ -1379,7 +1380,8 @@ int cpu_add(uint32_t apic_id, uint32_t acpi_id, uint32_t pxm)
 
 int __cpu_up(unsigned int cpu)
 {
-    int apicid, ret;
+    unsigned int apicid;
+    int ret;
 
     if ( (apicid = x86_cpu_to_apicid[cpu]) == BAD_APICID )
         return -ENODEV;
