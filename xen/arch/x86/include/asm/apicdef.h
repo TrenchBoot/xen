@@ -11,9 +11,10 @@
 #define		APIC_DEFAULT_PHYS_BASE	0xfee00000U
  
 #define		APIC_ID		0x20
-#define			APIC_ID_MASK		(0xFFu<<24)
-#define			GET_xAPIC_ID(x)		(((x)>>24)&0xFFu)
-#define			SET_xAPIC_ID(x)		(((x)<<24))
+#define			APIC_ID_SHIFT		24
+#define			APIC_ID_MASK		(0xFFu<<APIC_ID_SHIFT)
+#define			GET_xAPIC_ID(x)		(((x)>>APIC_ID_SHIFT)&0xFFu)
+#define			SET_xAPIC_ID(x)		(((x)<<APIC_ID_SHIFT))
 #define		APIC_LVR	0x30
 #define			APIC_LVR_MASK		0xFF00FF
 #define			APIC_LVR_DIRECTED_EOI	(1 << 24)
@@ -117,10 +118,14 @@
 /* Applicable to vectors, TPR, and PPR. */
 #define		APIC_PRIO_CLASS(v)	((v) & 0xF0)
 
-#define APIC_BASE __fix_to_virt(FIX_APIC_BASE)
-
 #define MAX_IO_APICS 128
 
+#ifndef __ASSEMBLY__
+
+#define APIC_BASE __fix_to_virt(FIX_APIC_BASE)
+
 extern bool x2apic_enabled;
+
+#endif
 
 #endif
