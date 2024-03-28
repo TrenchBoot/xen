@@ -151,7 +151,7 @@ unsigned long __read_mostly xen_phys_start;
 char asmlinkage __section(".init.bss.stack_aligned") __aligned(STACK_SIZE)
     cpu0_stack[STACK_SIZE];
 
-/* Used by the BSP/AP paths to find the higher half stack mapping to use. */
+/* Used by the BSP path to find the higher half stack mapping to use. */
 void *stack_start = cpu0_stack + STACK_SIZE - sizeof(struct cpu_info);
 
 /* Used by the boot asm to stash the relocated multiboot info pointer. */
@@ -321,7 +321,7 @@ static void __init init_idle_domain(void)
 void srat_detect_node(int cpu)
 {
     nodeid_t node;
-    u32 apicid = x86_cpu_to_apicid[cpu];
+    unsigned int apicid = cpu_physical_id(cpu);
 
     node = apicid < MAX_LOCAL_APIC ? apicid_to_node[apicid] : NUMA_NO_NODE;
     if ( node == NUMA_NO_NODE )
@@ -344,11 +344,11 @@ void srat_detect_node(int cpu)
 static void __init normalise_cpu_order(void)
 {
     unsigned int i, j, min_cpu;
-    uint32_t apicid, diff, min_diff;
+    unsigned int apicid, diff, min_diff;
 
     for_each_present_cpu ( i )
     {
-        apicid = x86_cpu_to_apicid[i];
+        apicid = cpu_physical_id(i);
         min_diff = min_cpu = ~0u;
 
         /*
@@ -359,12 +359,12 @@ static void __init normalise_cpu_order(void)
               j < nr_cpu_ids;
               j = cpumask_next(j, &cpu_present_map) )
         {
-            diff = x86_cpu_to_apicid[j] ^ apicid;
+            diff = cpu_physical_id(j) ^ apicid;
             while ( diff & (diff-1) )
                 diff &= diff-1;
             if ( (diff < min_diff) ||
                  ((diff == min_diff) &&
-                  (x86_cpu_to_apicid[j] < x86_cpu_to_apicid[min_cpu])) )
+                  (cpu_physical_id(j) < cpu_physical_id(min_cpu))) )
             {
                 min_diff = diff;
                 min_cpu = j;
@@ -380,9 +380,9 @@ static void __init normalise_cpu_order(void)
 
         /* Switch the best-matching CPU with the next CPU in logical order. */
         j = cpumask_next(i, &cpu_present_map);
-        apicid = x86_cpu_to_apicid[min_cpu];
-        x86_cpu_to_apicid[min_cpu] = x86_cpu_to_apicid[j];
-        x86_cpu_to_apicid[j] = apicid;
+        apicid = smpboot_data[min_cpu].apicid;
+        smpboot_data[min_cpu].apicid = smpboot_data[j].apicid;
+        smpboot_data[j].apicid = apicid;
     }
 }
 
@@ -804,7 +804,7 @@ static void __init noreturn reinit_bsp_stack(void)
     /* Update SYSCALL trampolines */
     percpu_traps_init();
 
-    stack_base[0] = stack;
+    smpboot_data[0].stack_base = stack;
 
     rc = setup_cpu_root_pgt(0);
     if ( rc )
@@ -994,6 +994,7 @@ void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
     unsigned long eb_start, eb_end;
     bool acpi_boot_table_init_done = false, relocated = false;
     bool vm_init_done = false;
+    bool can_broadcast = false;
     int ret;
     struct ns16550_defaults ns16550 = {
         .data_bits = 8,
@@ -1973,6 +1974,10 @@ void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
      */
     if ( !pv_shim )
     {
+        /* Broadcast only if all present CPUs are to be brought up. */
+        can_broadcast = park_offline_cpus || num_present_cpus() <= max_cpus;
+
+        /* Separate loop to make parallel AP bringup possible. */
         for_each_present_cpu ( i )
         {
             /* Set up cpu_to_node[]. */
@@ -1980,6 +1985,15 @@ void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
             /* Set up node_to_cpumask based on cpu_to_node[]. */
             numa_add_cpu(i);
 
+            if ( can_broadcast && smpboot_data[i].stack_base == NULL )
+                smpboot_data[i].stack_base = cpu_alloc_stack(i);
+        }
+
+        if ( can_broadcast )
+            smp_send_init_sipi_sipi_allbutself();
+
+        for_each_present_cpu ( i )
+        {
             if ( (park_offline_cpus || num_online_cpus() < max_cpus) &&
                  !cpu_online(i) )
             {

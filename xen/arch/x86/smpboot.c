@@ -63,21 +63,22 @@ static cpumask_t *secondary_socket_cpumask;
 
 struct cpuinfo_x86 cpu_data[NR_CPUS];
 
-u32 x86_cpu_to_apicid[NR_CPUS] __read_mostly =
-	{ [0 ... NR_CPUS-1] = BAD_APICID };
+struct x86_smpboot_cpu_data smpboot_data[NR_CPUS] __read_mostly =
+    { [0 ... NR_CPUS-1].apicid = BAD_APICID };
 
 static int cpu_error;
-static enum cpu_state {
+enum cpu_state {
     CPU_STATE_DYING,    /* slave -> master: I am dying */
     CPU_STATE_DEAD,     /* slave -> master: I am completely dead */
-    CPU_STATE_INIT,     /* master -> slave: Early bringup phase 1 */
+    CPU_STATE_INIT,     /* slave -> master: Early bringup phase 1 completed */
     CPU_STATE_CALLOUT,  /* master -> slave: Early bringup phase 2 */
     CPU_STATE_CALLIN,   /* slave -> master: Completed phase 2 */
     CPU_STATE_ONLINE    /* master -> slave: Go fully online now. */
-} cpu_state;
-#define set_cpu_state(state) do { smp_mb(); cpu_state = (state); } while (0)
-
-void *stack_base[NR_CPUS];
+};
+#define set_cpu_state(cpu, state) do { \
+    smp_mb(); \
+    smpboot_data[cpu].cpu_state = (state); \
+} while (0)
 
 void initialize_cpu_data(unsigned int cpu)
 {
@@ -166,23 +167,13 @@ static void synchronize_tsc_slave(unsigned int slave)
 static void smp_callin(void)
 {
     unsigned int cpu = smp_processor_id();
-    int i, rc;
-
-    /* Wait 2s total for startup. */
-    Dprintk("Waiting for CALLOUT.\n");
-    for ( i = 0; cpu_state != CPU_STATE_CALLOUT; i++ )
-    {
-        BUG_ON(i >= 200);
-        cpu_relax();
-        mdelay(10);
-    }
+    int rc;
 
     /*
      * The boot CPU has finished the init stage and is spinning on cpu_state
      * update until we finish. We are free to set up this CPU: first the APIC.
      */
     Dprintk("CALLIN, before setup_local_APIC().\n");
-    x2apic_ap_setup();
     setup_local_APIC(false);
 
     /* Save our processor parameters. */
@@ -212,16 +203,14 @@ static void smp_callin(void)
     }
 
     /* Allow the master to continue. */
-    set_cpu_state(CPU_STATE_CALLIN);
+    set_cpu_state(cpu, CPU_STATE_CALLIN);
 
     synchronize_tsc_slave(cpu);
 
     /* And wait for our final Ack. */
-    while ( cpu_state != CPU_STATE_ONLINE )
+    while ( smpboot_data[cpu].cpu_state != CPU_STATE_ONLINE )
         cpu_relax();
 }
-
-static int booting_cpu;
 
 /* CPUs for which sibling maps can be computed. */
 static cpumask_t cpu_sibling_setup_map;
@@ -310,17 +299,23 @@ static void set_cpu_sibling_map(unsigned int cpu)
     }
 }
 
-void asmlinkage start_secondary(void *unused)
+void asmlinkage start_secondary(unsigned int cpu)
 {
     struct cpu_info *info = get_cpu_info();
 
+    /* Tell BSP that we are awake. */
+    set_cpu_state(cpu, CPU_STATE_INIT);
+
     /*
-     * Dont put anything before smp_callin(), SMP booting is so fragile that we
+     * Don't put anything before smp_callin(), SMP booting is so fragile that we
      * want to limit the things done here to the most necessary things.
      */
-    unsigned int cpu = booting_cpu;
 
     /* Critical region without IDT or TSS.  Any fault is deadly! */
+
+    /* Wait until BSP tells us to proceed. */
+    while ( smpboot_data[cpu].cpu_state != CPU_STATE_CALLOUT )
+        cpu_relax();
 
     set_current(idle_vcpu[cpu]);
     this_cpu(curr_vcpu) = idle_vcpu[cpu];
@@ -349,6 +344,14 @@ void asmlinkage start_secondary(void *unused)
     get_cpu_info()->xen_cr3 = 0;
     get_cpu_info()->pv_cr3 = 0;
 
+    /*
+     * BUG_ON() used in load_system_tables() and later code may end up calling
+     * machine_restart() which tries to get APIC ID for CPU running this code.
+     * If BSP detected that x2APIC is enabled, get_apic_id() will try to use it
+     * for _all_ CPUs. Enable x2APIC on secondary CPUs now so we won't end up
+     * with endless #GP loop.
+     */
+    x2apic_ap_setup();
     load_system_tables();
 
     /* Full exception support from here on in. */
@@ -416,9 +419,11 @@ void asmlinkage start_secondary(void *unused)
     startup_cpu_idle_loop();
 }
 
-static int wakeup_secondary_cpu(int phys_apicid, unsigned long start_eip)
+static int wakeup_secondary_cpu(
+    unsigned int phys_apicid, unsigned long start_eip)
 {
     unsigned long send_status = 0, accept_status = 0;
+    unsigned int sh = 0;
     int maxlvt, timeout, i;
 
     /*
@@ -438,6 +443,10 @@ static int wakeup_secondary_cpu(int phys_apicid, unsigned long start_eip)
     if ( tboot_in_measured_env() && !tboot_wake_ap(phys_apicid, start_eip) )
         return 0;
 
+    /* Use destination shorthand for broadcasting IPIs during boot. */
+    if ( phys_apicid == BAD_APICID )
+        sh = APIC_DEST_ALLBUT;
+
     /*
      * Be paranoid about clearing APIC errors.
      */
@@ -451,7 +460,7 @@ static int wakeup_secondary_cpu(int phys_apicid, unsigned long start_eip)
         /*
          * Turn INIT on target chip via IPI
          */
-        apic_icr_write(APIC_INT_LEVELTRIG | APIC_INT_ASSERT | APIC_DM_INIT,
+        apic_icr_write(APIC_INT_LEVELTRIG | APIC_INT_ASSERT | APIC_DM_INIT | sh,
                        phys_apicid);
 
         if ( !x2apic_enabled )
@@ -468,7 +477,7 @@ static int wakeup_secondary_cpu(int phys_apicid, unsigned long start_eip)
 
             Dprintk("Deasserting INIT.\n");
 
-            apic_icr_write(APIC_INT_LEVELTRIG | APIC_DM_INIT, phys_apicid);
+            apic_icr_write(APIC_INT_LEVELTRIG | APIC_DM_INIT | sh, phys_apicid);
 
             Dprintk("Waiting for send to finish...\n");
             timeout = 0;
@@ -505,7 +514,7 @@ static int wakeup_secondary_cpu(int phys_apicid, unsigned long start_eip)
          * STARTUP IPI
          * Boot on the stack
          */
-        apic_icr_write(APIC_DM_STARTUP | (start_eip >> 12), phys_apicid);
+        apic_icr_write(APIC_DM_STARTUP | (start_eip >> 12) | sh, phys_apicid);
 
         if ( !x2apic_enabled )
         {
@@ -555,10 +564,9 @@ int alloc_cpu_id(void)
     return (cpu < nr_cpu_ids) ? cpu : -ENODEV;
 }
 
-static int do_boot_cpu(int apicid, int cpu)
+static int do_boot_cpu(unsigned int apicid, int cpu)
 {
     int timeout, boot_error = 0, rc = 0;
-    unsigned long start_eip;
 
     /*
      * Save current MTRR state in case it was changed since early boot
@@ -566,43 +574,55 @@ static int do_boot_cpu(int apicid, int cpu)
      */
     mtrr_save_state();
 
-    booting_cpu = cpu;
+    /* Check if AP is already up. */
+    if ( smpboot_data[cpu].cpu_state != CPU_STATE_INIT )
+    {
+        /* This grunge runs the startup process for the targeted processor. */
+        unsigned long start_eip = bootsym_phys(trampoline_realmode_entry);
 
-    start_eip = bootsym_phys(trampoline_realmode_entry);
+        /* start_eip needs be page aligned, and below the 1M boundary. */
+        if ( start_eip & ~0xff000 )
+            panic("AP trampoline %#lx not suitably positioned\n", start_eip);
 
-    /* start_eip needs be page aligned, and below the 1M boundary. */
-    if ( start_eip & ~0xff000 )
-        panic("AP trampoline %#lx not suitably positioned\n", start_eip);
+        /* So we see what's up   */
+        if ( opt_cpu_info )
+            printk("Booting processor %d/%d eip %lx\n",
+                   cpu, apicid, start_eip);
 
-    /* So we see what's up   */
-    if ( opt_cpu_info )
-        printk("Booting processor %d/%d eip %lx\n",
-               cpu, apicid, start_eip);
+        /* mark "stuck" area as not stuck */
+        bootsym(trampoline_cpu_started) = 0;
+        smp_mb();
 
-    stack_start = stack_base[cpu] + STACK_SIZE - sizeof(struct cpu_info);
-
-    /* This grunge runs the startup process for the targeted processor. */
-
-    set_cpu_state(CPU_STATE_INIT);
-
-    /* Starting actual IPI sequence... */
-    boot_error = wakeup_secondary_cpu(apicid, start_eip);
+        /* Starting actual IPI sequence... */
+        boot_error = wakeup_secondary_cpu(apicid, start_eip);
+    }
 
     if ( !boot_error )
     {
-        /* Allow AP to start initializing. */
-        set_cpu_state(CPU_STATE_CALLOUT);
-        Dprintk("After Callout %d.\n", cpu);
-
-        /* Wait 5s total for a response. */
-        for ( timeout = 0; timeout < 50000; timeout++ )
+        /* Wait 2s total for a response. */
+        for ( timeout = 0; timeout < 20000; timeout++ )
         {
-            if ( cpu_state != CPU_STATE_CALLOUT )
+            if ( smpboot_data[cpu].cpu_state == CPU_STATE_INIT )
                 break;
             udelay(100);
         }
 
-        if ( cpu_state == CPU_STATE_CALLIN )
+        if ( smpboot_data[cpu].cpu_state == CPU_STATE_INIT )
+        {
+            /* Allow AP to start initializing. */
+            set_cpu_state(cpu, CPU_STATE_CALLOUT);
+            Dprintk("After Callout %d.\n", cpu);
+
+            /* Wait 5s total for a response. */
+            for ( timeout = 0; timeout < 500000; timeout++ )
+            {
+                if ( smpboot_data[cpu].cpu_state != CPU_STATE_CALLOUT )
+                    break;
+                udelay(10);
+            }
+        }
+
+        if ( smpboot_data[cpu].cpu_state == CPU_STATE_CALLIN )
         {
             /* number CPUs logically, starting from 1 (BSP is 0) */
             Dprintk("OK.\n");
@@ -610,7 +630,7 @@ static int do_boot_cpu(int apicid, int cpu)
             synchronize_tsc_master(cpu);
             Dprintk("CPU has booted.\n");
         }
-        else if ( cpu_state == CPU_STATE_DEAD )
+        else if ( smpboot_data[cpu].cpu_state == CPU_STATE_DEAD )
         {
             smp_rmb();
             rc = cpu_error;
@@ -633,10 +653,6 @@ static int do_boot_cpu(int apicid, int cpu)
         cpu_exit_clear(cpu);
         rc = -EIO;
     }
-
-    /* mark "stuck" area as not stuck */
-    bootsym(trampoline_cpu_started) = 0;
-    smp_mb();
 
     return rc;
 }
@@ -681,7 +697,7 @@ unsigned long alloc_stub_page(unsigned int cpu, unsigned long *mfn)
 void cpu_exit_clear(unsigned int cpu)
 {
     cpu_uninit(cpu);
-    set_cpu_state(CPU_STATE_DEAD);
+    set_cpu_state(cpu, CPU_STATE_DEAD);
 }
 
 static int clone_mapping(const void *ptr, root_pgentry_t *rpt)
@@ -856,7 +872,7 @@ int setup_cpu_root_pgt(unsigned int cpu)
 
     /* Install direct map page table entries for stack, IDT, and TSS. */
     for ( off = rc = 0; !rc && off < STACK_SIZE; off += PAGE_SIZE )
-        rc = clone_mapping(__va(__pa(stack_base[cpu])) + off, rpt);
+        rc = clone_mapping(__va(__pa(smpboot_data[cpu].stack_base)) + off, rpt);
 
     if ( !rc )
         rc = clone_mapping(idt_tables[cpu], rpt);
@@ -1007,10 +1023,10 @@ static void cpu_smpboot_free(unsigned int cpu, bool remove)
         FREE_XENHEAP_PAGE(per_cpu(gdt, cpu));
         FREE_XENHEAP_PAGE(idt_tables[cpu]);
 
-        if ( stack_base[cpu] )
+        if ( smpboot_data[cpu].stack_base )
         {
-            memguard_unguard_stack(stack_base[cpu]);
-            FREE_XENHEAP_PAGES(stack_base[cpu], STACK_ORDER);
+            memguard_unguard_stack(smpboot_data[cpu].stack_base);
+            FREE_XENHEAP_PAGES(smpboot_data[cpu].stack_base, STACK_ORDER);
         }
     }
 }
@@ -1044,11 +1060,11 @@ static int cpu_smpboot_alloc(unsigned int cpu)
     if ( node != NUMA_NO_NODE )
         memflags = MEMF_node(node);
 
-    if ( stack_base[cpu] == NULL &&
-         (stack_base[cpu] = cpu_alloc_stack(cpu)) == NULL )
+    if ( smpboot_data[cpu].stack_base == NULL &&
+         (smpboot_data[cpu].stack_base = cpu_alloc_stack(cpu)) == NULL )
             goto out;
 
-    info = get_cpu_info_from_stack((unsigned long)stack_base[cpu]);
+    info = get_cpu_info_from_stack((unsigned long)smpboot_data[cpu].stack_base);
     info->processor_id = cpu;
     info->per_cpu_offset = __per_cpu_offset[cpu];
 
@@ -1143,6 +1159,22 @@ static struct notifier_block cpu_smpboot_nfb = {
     .notifier_call = cpu_smpboot_callback
 };
 
+void __init smp_send_init_sipi_sipi_allbutself(void)
+{
+    unsigned long start_eip = bootsym_phys(trampoline_realmode_entry);
+
+    /* start_eip needs be page aligned, and below the 1M boundary. */
+    if ( start_eip & ~0xff000 )
+        panic("AP trampoline %#lx not suitably positioned\n", start_eip);
+
+    /* So we see what's up   */
+    if ( opt_cpu_info )
+        printk("Booting APs in parallel, eip %lx\n", start_eip);
+
+    /* Starting actual broadcast IPI sequence... */
+    wakeup_secondary_cpu(BAD_APICID, start_eip);
+}
+
 void __init smp_prepare_cpus(void)
 {
     register_cpu_notifier(&cpu_smpboot_nfb);
@@ -1154,9 +1186,13 @@ void __init smp_prepare_cpus(void)
     print_cpu_info(0);
 
     boot_cpu_physical_apicid = get_apic_id();
-    x86_cpu_to_apicid[0] = boot_cpu_physical_apicid;
+    smpboot_data[0].apicid = boot_cpu_physical_apicid;
 
-    stack_base[0] = (void *)((unsigned long)stack_start & ~(STACK_SIZE - 1));
+    smpboot_data[0].stack_base = (void *)
+             ((unsigned long)stack_start & ~(STACK_SIZE - 1));
+
+    /* Not really used anywhere, but set it just in case. */
+    set_cpu_state(0, CPU_STATE_ONLINE);
 
     set_nr_sockets();
 
@@ -1264,7 +1300,7 @@ void __cpu_disable(void)
 {
     int cpu = smp_processor_id();
 
-    set_cpu_state(CPU_STATE_DYING);
+    set_cpu_state(cpu, CPU_STATE_DYING);
 
     local_irq_disable();
     clear_local_APIC();
@@ -1289,7 +1325,7 @@ void __cpu_die(unsigned int cpu)
     unsigned int i = 0;
     enum cpu_state seen_state;
 
-    while ( (seen_state = cpu_state) != CPU_STATE_DEAD )
+    while ( (seen_state = smpboot_data[cpu].cpu_state) != CPU_STATE_DEAD )
     {
         BUG_ON(seen_state != CPU_STATE_DYING);
         mdelay(100);
@@ -1372,9 +1408,10 @@ int cpu_add(uint32_t apic_id, uint32_t acpi_id, uint32_t pxm)
 
 int __cpu_up(unsigned int cpu)
 {
-    int apicid, ret;
+    unsigned int apicid;
+    int ret;
 
-    if ( (apicid = x86_cpu_to_apicid[cpu]) == BAD_APICID )
+    if ( (apicid = cpu_physical_id(cpu)) == BAD_APICID )
         return -ENODEV;
 
     if ( (!x2apic_enabled && apicid >= APIC_ALL_CPUS) ||
@@ -1390,7 +1427,7 @@ int __cpu_up(unsigned int cpu)
 
     time_latch_stamps();
 
-    set_cpu_state(CPU_STATE_ONLINE);
+    set_cpu_state(cpu, CPU_STATE_ONLINE);
     while ( !cpu_online(cpu) )
     {
         cpu_relax();

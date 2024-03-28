@@ -31,6 +31,7 @@ DECLARE_PER_CPU(cpumask_var_t, send_ipi_cpumask);
 extern bool park_offline_cpus;
 
 void smp_send_nmi_allbutself(void);
+void smp_send_init_sipi_sipi_allbutself(void);
 
 void send_IPI_mask(const cpumask_t *mask, int vector);
 void send_IPI_self(int vector);
@@ -39,9 +40,15 @@ extern void (*mtrr_hook) (void);
 
 extern void zap_low_mappings(void);
 
-extern u32 x86_cpu_to_apicid[];
+struct x86_smpboot_cpu_data {
+    void *stack_base;
+    unsigned int apicid;
+    unsigned int cpu_state;
+};
 
-#define cpu_physical_id(cpu)	x86_cpu_to_apicid[cpu]
+extern struct x86_smpboot_cpu_data smpboot_data[];
+
+#define cpu_physical_id(cpu)	smpboot_data[cpu].apicid
 
 extern void cpu_exit_clear(unsigned int cpu);
 extern void cpu_uninit(unsigned int cpu);
@@ -72,7 +79,7 @@ extern cpumask_t **socket_cpumask;
  * by certain scheduling code only.
  */
 #define get_cpu_current(cpu) \
-    (get_cpu_info_from_stack((unsigned long)stack_base[cpu])->current_vcpu)
+    (get_cpu_info_from_stack((unsigned long)smpboot_data[cpu].stack_base)->current_vcpu)
 
 extern unsigned int disabled_cpus;
 extern bool unaccounted_cpus;

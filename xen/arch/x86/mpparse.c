@@ -133,7 +133,7 @@ static int __init mpf_checksum(unsigned char *mp, int len)
 
 /* Return xen's logical cpu_id of the new added cpu or <0 if error */
 static int MP_processor_info_x(struct mpc_config_processor *m,
-			       u32 apicid, bool hotplug)
+			       unsigned int apicid, bool hotplug)
 {
  	int ver, cpu = 0;
  	
@@ -187,7 +187,7 @@ static int MP_processor_info_x(struct mpc_config_processor *m,
 			       " Processor with apicid %i ignored\n", apicid);
 			return cpu;
 		}
-		x86_cpu_to_apicid[cpu] = apicid;
+		smpboot_data[cpu].apicid = apicid;
 		cpumask_set_cpu(cpu, &cpu_present_map);
 	}
 
@@ -822,12 +822,12 @@ void mp_unregister_lapic(uint32_t apic_id, uint32_t cpu)
 	if (!cpu || (apic_id == boot_cpu_physical_apicid))
 		return;
 
-	if (x86_cpu_to_apicid[cpu] != apic_id)
+	if (cpu_physical_id(cpu) != apic_id)
 		return;
 
 	physid_clear(apic_id, phys_cpu_present_map);
 
-	x86_cpu_to_apicid[cpu] = BAD_APICID;
+	smpboot_data[cpu].apicid = BAD_APICID;
 	cpumask_clear_cpu(cpu, &cpu_present_map);
 }
 

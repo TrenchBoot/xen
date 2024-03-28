@@ -2,6 +2,7 @@
 #include <xen/multiboot.h>
 #include <xen/multiboot2.h>
 #include <public/xen.h>
+#include <asm/apicdef.h>
 #include <asm/asm_defns.h>
 #include <asm/fixmap.h>
 #include <asm/page.h>

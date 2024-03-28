@@ -208,4 +208,10 @@ void __dummy__(void)
 
     OFFSET(DOMAIN_vm_assist, struct domain, vm_assist);
     BLANK();
+
+    DEFINE(SMPBOOT_DATA_sizeof, sizeof(struct x86_smpboot_cpu_data));
+    OFFSET(SMPBOOT_DATA_stack_base, struct x86_smpboot_cpu_data, stack_base);
+    OFFSET(SMPBOOT_DATA_apicid, struct x86_smpboot_cpu_data, apicid);
+    OFFSET(SMPBOOT_DATA_cpu_state, struct x86_smpboot_cpu_data, cpu_state);
+    BLANK();
 }
