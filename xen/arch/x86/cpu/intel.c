@@ -14,6 +14,11 @@
 
 #include "cpu.h"
 
+/* EAX value for GETSEC leaf functions. Intel SDM: GETSEC[CAPABILITIES] */
+#define GETSEC_CAPABILITIES             0
+/* Intel SDM: GETSEC Capability Result Encoding */
+#define GETSEC_CAP_TXT_CHIPSET          1
+
 /*
  * MSR_MCU_OPT_CTRL is a collection of unrelated functionality, with separate
  * enablement requirements, but which want to be consistent across the system.
@@ -620,6 +625,49 @@ static void init_intel_perf(struct cpuinfo_x86 *c)
     }
 }
 
+/*
+ * Print out the SMX and TXT capabilties, so that dom0 can determine if the
+ * system is DRTM-capable.
+ */
+static void intel_log_smx_txt(void)
+{
+    unsigned long cr4_val, getsec_caps;
+
+    /*
+     * Run only on BSP and not during resume to report the capability only once.
+     */
+    if ( system_state != SYS_STATE_resume && smp_processor_id() )
+        return;
+
+    printk("CPU: SMX capability ");
+    if ( !test_bit(X86_FEATURE_SMX, &boot_cpu_data.x86_capability) )
+    {
+        printk("not supported\n");
+        return;
+    }
+    printk("supported\n");
+
+    /* Can't run GETSEC without VMX and SMX */
+    if ( !test_bit(X86_FEATURE_VMX, &boot_cpu_data.x86_capability) )
+        return;
+
+    cr4_val = read_cr4();
+    if ( !(cr4_val & X86_CR4_SMXE) )
+        write_cr4(cr4_val | X86_CR4_SMXE);
+
+    asm volatile ("getsec\n"
+        : "=a" (getsec_caps)
+        : "a" (GETSEC_CAPABILITIES), "b" (0) :);
+
+    if ( getsec_caps & GETSEC_CAP_TXT_CHIPSET )
+        printk("Chipset supports TXT\n");
+    else
+        printk("Chipset does not support TXT\n");
+
+    if ( !(cr4_val & X86_CR4_SMXE) )
+        write_cr4(cr4_val & ~X86_CR4_SMXE);
+}
+
 static void cf_check init_intel(struct cpuinfo_x86 *c)
 {
 	/* Detect the extended topology information if available */
@@ -633,6 +681,8 @@ static void cf_check init_intel(struct cpuinfo_x86 *c)
 		c->x86_max_cores = num_cpu_cores(c);
 		detect_ht(c);
 	}
+
+	intel_log_smx_txt();
 
 	/* Work around errata */
 	Intel_errata_workarounds(c);
