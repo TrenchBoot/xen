@@ -54,14 +54,13 @@ bool __init arch_numa_unavailable(void)
 /*
  * Setup early cpu_to_node.
  *
- * Populate cpu_to_node[] only if x86_cpu_to_apicid[],
- * and apicid_to_node[] tables have valid entries for a CPU.
- * This means we skip cpu_to_node[] initialisation for NUMA
- * emulation and faking node case (when running a kernel compiled
- * for NUMA on a non NUMA box), which is OK as cpu_to_node[]
- * is already initialized in a round robin manner at numa_init_array,
- * prior to this call, and this initialization is good enough
- * for the fake NUMA cases.
+ * Populate cpu_to_node[] only if cpu_data[], and apicid_to_node[]
+ * tables have valid entries for a CPU. This means we skip
+ * cpu_to_node[] initialisation for NUMA emulation and faking node
+ * case (when running a kernel compiled for NUMA on a non NUMA box),
+ * which is OK as cpu_to_node[] is already initialized in a round
+ * robin manner at numa_init_array, prior to this call, and this
+ * initialization is good enough for the fake NUMA cases.
  */
 void __init init_cpu_to_node(void)
 {
@@ -70,7 +69,7 @@ void __init init_cpu_to_node(void)
 
     for ( i = 0; i < nr_cpu_ids; i++ )
     {
-        u32 apicid = x86_cpu_to_apicid[i];
+        u32 apicid = cpu_physical_id(i);
         if ( apicid == BAD_APICID )
             continue;
         node = apicid < MAX_LOCAL_APIC ? apicid_to_node[apicid] : NUMA_NO_NODE;

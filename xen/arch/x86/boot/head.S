@@ -4,9 +4,11 @@
 #include <public/xen.h>
 #include <asm/asm_defns.h>
 #include <asm/fixmap.h>
+#include <asm/intel_txt.h>
 #include <asm/page.h>
 #include <asm/processor.h>
 #include <asm/msr-index.h>
+#include <asm/apicdef.h>
 #include <asm/cpufeature.h>
 #include <public/elfnote.h>
 
@@ -123,6 +125,25 @@ multiboot2_header:
 
         .size multiboot2_header, . - multiboot2_header
         .type multiboot2_header, @object
+
+        .balign 16
+mle_header:
+        .long   0x9082ac5a  /* UUID0 */
+        .long   0x74a7476f  /* UUID1 */
+        .long   0xa2555c0f  /* UUID2 */
+        .long   0x42b651cb  /* UUID3 */
+        .long   0x00000034  /* MLE header size */
+        .long   0x00020002  /* MLE version 2.2 */
+        .long   (slaunch_stub_entry - start)  /* Linear entry point of MLE (SINIT virt. address) */
+        .long   0x00000000  /* First valid page of MLE */
+        .long   0x00000000  /* Offset within binary of first byte of MLE */
+        .long   (_end - start)  /* Offset within binary of last byte + 1 of MLE */
+        .long   0x00000223  /* Bit vector of MLE-supported capabilities */
+        .long   0x00000000  /* Starting linear address of command line (unused) */
+        .long   0x00000000  /* Ending linear address of command line (unused) */
+
+        .size mle_header, .-mle_header
+        .type mle_header, @object
 
         .section .init.rodata, "a", @progbits
 
@@ -329,6 +350,57 @@ cs32_switch:
         /* Jump to earlier loaded address. */
         jmp     *%edi
 
+        /*
+         * Entry point for TrenchBoot Secure Launch, common for Intel TXT and
+         * AMD Secure Startup, but state is slightly different.
+         *
+         * On Intel:
+         * CPU is in 32b protected mode with paging disabled. On entry:
+         * - %ebx = %eip = this entry point,
+         * - stack pointer is undefined,
+         * - CS is flat 4GB code segment,
+         * - DS, ES, SS, FS and GS are undefined.
+         *
+         * Additional restrictions:
+         * - some MSRs are partially cleared, among them IA32_MISC_ENABLE, so
+         *   some capabilities might be reported as disabled even if they are
+         *   supported by CPU
+         * - interrupts (including NMIs and SMIs) are disabled and must be
+         *   enabled later
+         * - trying to enter real mode results in reset
+         * - APs must be brought up by MONITOR or GETSEC[WAKEUP], depending on
+         *   which is supported by a given SINIT ACM
+         *
+         * On AMD (as implemented by TrenchBoot's SKL):
+         * CPU is in 32b protected mode with paging disabled. On entry:
+         * - %ebx = %eip = this entry point,
+         * - %ebp holds base address of SKL
+         * - stack pointer is treated as undefined for parity with TXT,
+         * - CS is flat 4GB code segment,
+         * - DS, ES, SS are flat 4GB data segments, but treated as undefined for
+         *   parity with TXT.
+         *
+         * Additional restrictions:
+         * - interrupts (including NMIs and SMIs) are disabled and must be
+         *   enabled later
+         * - APs must be brought up by SIPI without an INIT
+         */
+slaunch_stub_entry:
+        /* Calculate the load base address. */
+        mov     %ebx, %esi
+        sub     $sym_offs(slaunch_stub_entry), %esi
+
+        /* On AMD, %ebp holds the base address of SLB, save it for later. */
+        mov     %ebp, %ebx
+
+        /*
+         * Mark Secure Launch boot protocol and jump to common entry. Note that
+         * all general purpose registers except %ebx and %esi are clobbered
+         * between here and .Lslaunch_proto.
+         */
+        mov     $SLAUNCH_BOOTLOADER_MAGIC, %eax
+        jmp     .Lset_stack
+
 #ifdef CONFIG_PVH_GUEST
 ELFNOTE(Xen, XEN_ELFNOTE_PHYS32_ENTRY, .long sym_offs(__pvh_start))
 
@@ -368,12 +440,13 @@ __start:
         /* Restore the clobbered field. */
         mov     %edx, (%ebx)
 
+.Lset_stack:
         /* Set up stack. */
         lea     STACK_SIZE - CPUINFO_sizeof + sym_esi(cpu0_stack), %esp
 
         /* Initialize GDTR and basic data segments. */
-        add     %esi, sym_esi(gdt_boot_base)
-        lgdt    sym_esi(gdt_boot_descr)
+        add     %esi, %cs:sym_esi(gdt_boot_base)
+        lgdt    %cs:sym_esi(gdt_boot_descr)
 
         mov     $BOOT_DS, %ecx
         mov     %ecx, %ds
@@ -416,6 +489,10 @@ __start:
         /* Bootloaders may set multiboot{1,2}.mem_lower to a nonzero value. */
         xor     %edx,%edx
 
+        /* Check for TrenchBoot slaunch bootloader. */
+        cmp     $SLAUNCH_BOOTLOADER_MAGIC,%eax
+        je      .Lslaunch_proto
+
         /* Check for Multiboot2 bootloader. */
         cmp     $MULTIBOOT2_BOOTLOADER_MAGIC,%eax
         je      .Lmultiboot2_proto
@@ -430,6 +507,42 @@ __start:
         /* Not available? BDA value will be fine. */
         cmovnz  MB_mem_lower(%ebx),%edx
         jmp     trampoline_bios_setup
+
+.Lslaunch_proto:
+        /* Upon reaching here, CPU state mostly matches the one setup by the
+         * bootloader with ESP, ESI and EDX being clobbered above. */
+
+        /* Save information that TrenchBoot slaunch was used. */
+        movb    $1, sym_esi(slaunch_active)
+
+        /* Prepare space for output parameter of slaunch_early_tests(), which is
+         * a structure of two uint32_t fields. */
+        sub     $8, %esp
+
+        push    %esp                             /* pointer to output structure */
+        push    %ebx                             /* Slaunch parameter on AMD */
+        lea     sym_offs(__2M_rwdata_end), %ecx  /* end of target image */
+        lea     sym_offs(_start), %edx           /* target base address */
+        mov     %esi, %eax                       /* load base address */
+        /* slaunch_early_tests(load/eax, tgt/edx, tgt_end/ecx,
+                               slaunch/stk, ret/stk) using fastcall. */
+        call    slaunch_early_tests
+
+        /* Move outputs of slaunch_early_tests() from stack into registers. */
+        pop     %eax  /* physical MBI address */
+        pop     %edx  /* physical SLRT address */
+
+        /* Save physical address of SLRT for C code. */
+        mov     %edx, sym_esi(slaunch_slrt)
+
+        /* Store MBI address in EBX where MB2 code expects it. */
+        mov     %eax, %ebx
+
+        /* tpm_extend_mbi(mbi/eax, slrt/edx) using fastcall. */
+        call    tpm_extend_mbi
+
+        /* Move magic number expected by Multiboot 2 to EAX and fall through. */
+        movl    $MULTIBOOT2_BOOTLOADER_MAGIC,%eax
 
 .Lmultiboot2_proto:
         /* Skip Multiboot2 information fixed part. */
@@ -770,6 +883,14 @@ END(cmdline_parse_early)
 FUNC_LOCAL(reloc)
         .incbin "reloc.bin"
 END(reloc)
+
+FUNC_LOCAL(slaunch_early_tests)
+        .incbin "slaunch_early.bin"
+END(slaunch_early_tests)
+
+FUNC_LOCAL(tpm_extend_mbi)
+        .incbin "tpm_early.bin"
+END(tpm_extend_mbi)
 
 ENTRY(trampoline_start)
 #include "trampoline.S"
