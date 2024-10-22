@@ -2,6 +2,8 @@ obj-bin-y += head.o
 
 obj32 := cmdline.32.o
 obj32 += reloc.32.o
+obj32 += slaunch_early.32.o
+obj32 += tpm_early.32.o
 
 nocov-y   += $(obj32)
 noubsan-y += $(obj32)
@@ -34,5 +36,9 @@ LD32 := $(LD) $(subst x86_64,i386,$(LDFLAGS_DIRECT))
 
 %.lnk: %.32.o $(src)/build32.lds
 	$(LD32) -N -T $(filter %.lds,$^) -o $@ $<
+
+$(obj)/tpm_early.32.o: XEN_CFLAGS += -D__EARLY_TPM__
+$(obj)/tpm_early.32.o: $(src)/../tpm.c FORCE
+	$(call if_changed_rule,cc_o_c)
 
 clean-files := *.lnk *.bin

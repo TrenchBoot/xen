@@ -60,6 +60,8 @@
 #include <asm/prot-key.h>
 #include <asm/pv/domain.h>
 #include <asm/trampoline.h>
+#include <asm/slaunch.h>
+#include <asm/tpm.h>
 
 /* opt_nosmp: If true, secondary processors are ignored. */
 static bool __initdata opt_nosmp;
@@ -321,7 +323,7 @@ static void __init init_idle_domain(void)
 void srat_detect_node(int cpu)
 {
     nodeid_t node;
-    u32 apicid = x86_cpu_to_apicid[cpu];
+    u32 apicid = cpu_physical_id(cpu);
 
     node = apicid < MAX_LOCAL_APIC ? apicid_to_node[apicid] : NUMA_NO_NODE;
     if ( node == NUMA_NO_NODE )
@@ -348,7 +350,7 @@ static void __init normalise_cpu_order(void)
 
     for_each_present_cpu ( i )
     {
-        apicid = x86_cpu_to_apicid[i];
+        apicid = cpu_physical_id(i);
         min_diff = min_cpu = ~0u;
 
         /*
@@ -359,12 +361,12 @@ static void __init normalise_cpu_order(void)
               j < nr_cpu_ids;
               j = cpumask_next(j, &cpu_present_map) )
         {
-            diff = x86_cpu_to_apicid[j] ^ apicid;
+            diff = cpu_physical_id(j) ^ apicid;
             while ( diff & (diff-1) )
                 diff &= diff-1;
             if ( (diff < min_diff) ||
                  ((diff == min_diff) &&
-                  (x86_cpu_to_apicid[j] < x86_cpu_to_apicid[min_cpu])) )
+                  (cpu_physical_id(j) < cpu_physical_id(min_cpu))) )
             {
                 min_diff = diff;
                 min_cpu = j;
@@ -380,9 +382,9 @@ static void __init normalise_cpu_order(void)
 
         /* Switch the best-matching CPU with the next CPU in logical order. */
         j = cpumask_next(i, &cpu_present_map);
-        apicid = x86_cpu_to_apicid[min_cpu];
-        x86_cpu_to_apicid[min_cpu] = x86_cpu_to_apicid[j];
-        x86_cpu_to_apicid[j] = apicid;
+        apicid = cpu_physical_id(min_cpu);
+        cpu_physical_id(min_cpu) = cpu_physical_id(j);
+        cpu_physical_id(j) = apicid;
     }
 }
 
@@ -803,7 +805,7 @@ static void __init noreturn reinit_bsp_stack(void)
     /* Update SYSCALL trampolines */
     percpu_traps_init();
 
-    stack_base[0] = stack;
+    cpu_data[0].stack_base = stack;
 
     rc = setup_cpu_root_pgt(0);
     if ( rc )
@@ -958,9 +960,6 @@ static struct domain *__init create_dom0(const module_t *image,
 
     return d;
 }
-
-/* How much of the directmap is prebuilt at compile time. */
-#define PREBUILT_MAP_LIMIT (1 << L2_PAGETABLE_SHIFT)
 
 void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
 {
@@ -1279,6 +1278,19 @@ void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
 #endif
     }
 
+    if ( slaunch_active )
+    {
+        /* Prepare for accesses to essential data structures setup by boot
+         * environment. */
+        map_slaunch_mem_regions();
+
+        /* Measure SLRT here because it gets used by init_e820(), the rest is
+         * measured below by tpm_process_drtm_policy(). */
+        tpm_measure_slrt();
+
+        protect_slaunch_mem_regions();
+    }
+
     /* Sanitise the raw E820 map to produce a final clean version. */
     max_page = raw_max_page = init_e820(memmap_type, &e820_raw);
 
@@ -1296,6 +1308,12 @@ void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
 
     /* Create a temporary copy of the E820 map. */
     memcpy(&boot_e820, &e820, sizeof(e820));
+
+    /* Process all yet unmeasured DRTM entries after E820 initialization to not
+     * do this while memory is uncached (too slow). This must also happen before
+     * fields of Multiboot modules change their format below. */
+    if ( slaunch_active )
+        tpm_process_drtm_policy(mbi);
 
     /* Early kexec reservation (explicit static start address). */
     nr_pages = 0;
@@ -1961,6 +1979,7 @@ void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
      */
     if ( !pv_shim )
     {
+        /* Separate loop to make parallel AP bringup possible. */
         for_each_present_cpu ( i )
         {
             /* Set up cpu_to_node[]. */
@@ -1968,6 +1987,14 @@ void asmlinkage __init noreturn __start_xen(unsigned long mbi_p)
             /* Set up node_to_cpumask based on cpu_to_node[]. */
             numa_add_cpu(i);
 
+            if ( cpu_data[i].stack_base == NULL )
+                cpu_data[i].stack_base = cpu_alloc_stack(i);
+        }
+
+        smp_send_init_sipi_sipi_allbutself();
+
+        for_each_present_cpu ( i )
+        {
             if ( (park_offline_cpus || num_online_cpus() < max_cpus) &&
                  !cpu_online(i) )
             {
