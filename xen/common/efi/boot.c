@@ -19,6 +19,7 @@
 #if EFI_PAGE_SIZE != PAGE_SIZE
 # error Cannot use xen/pfn.h here!
 #endif
+#include <xen/slr-table.h>
 #include <xen/string.h>
 #include <xen/stringify.h>
 #ifdef CONFIG_X86
@@ -45,6 +46,8 @@
 #define EFI_SYSTEM_RESOURCE_TABLE_GUID    \
   { 0xb122a263U, 0x3661, 0x4f68, {0x99, 0x29, 0x78, 0xf8, 0xb0, 0xd6, 0x21, 0x80} }
 #define EFI_SYSTEM_RESOURCE_TABLE_FIRMWARE_RESOURCE_VERSION 1
+#define UEFI_SLR_TABLE_GUID \
+  { 0x877a9b2aU, 0x0385, 0x45d1, { 0xa0, 0x34, 0x9d, 0xac, 0x9c, 0x9e, 0x56, 0x5f } }
 
 typedef struct {
     EFI_GUID FwClass;
@@ -1154,6 +1157,7 @@ static void __init efi_tables(void)
         static EFI_GUID __initdata mps_guid = MPS_TABLE_GUID;
         static EFI_GUID __initdata smbios_guid = SMBIOS_TABLE_GUID;
         static EFI_GUID __initdata smbios3_guid = SMBIOS3_TABLE_GUID;
+        static EFI_GUID __initdata slr_guid = UEFI_SLR_TABLE_GUID;
 
         if ( match_guid(&acpi2_guid, &efi_ct[i].VendorGuid) )
             efi.acpi20 = (unsigned long)efi_ct[i].VendorTable;
@@ -1165,6 +1169,8 @@ static void __init efi_tables(void)
             efi.smbios = (unsigned long)efi_ct[i].VendorTable;
         if ( match_guid(&smbios3_guid, &efi_ct[i].VendorGuid) )
             efi.smbios3 = (unsigned long)efi_ct[i].VendorTable;
+        if ( match_guid(&slr_guid, &efi_ct[i].VendorGuid) )
+            efi.slr = (unsigned long)efi_ct[i].VendorTable;
         if ( match_guid(&esrt_guid, &efi_ct[i].VendorGuid) )
             esrt = (UINTN)efi_ct[i].VendorTable;
     }
