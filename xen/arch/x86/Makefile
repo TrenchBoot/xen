@@ -89,6 +89,7 @@ extra-y += xen.lds
 
 hostprogs-y += boot/mkelf32
 hostprogs-y += efi/mkreloc
+hostprogs-y += efi/fixmlehdr
 
 $(obj)/efi/mkreloc: HOSTCFLAGS += -I$(srctree)/include
 
@@ -122,6 +123,11 @@ $(TARGET): $(TARGET)-syms $(efi-y) $(obj)/boot/mkelf32
 	mv $(TMP) $(TARGET)
 
 CFLAGS-$(XEN_BUILD_EFI) += -DXEN_BUILD_EFI
+
+# Expose this build flag as a macro when compiling assembly files.
+ifeq ($(XEN_BUILD_EFI),y)
+XEN_AFLAGS += -DXEN_BUILD_EFI=1
+endif
 
 $(TARGET)-syms: $(objtree)/prelink.o $(obj)/xen.lds
 	$(objtree)/tools/symbols $(all_symbols) --empty > $(dot-target).0.S
@@ -196,7 +202,7 @@ note_file_option ?= $(note_file)
 extra-$(XEN_BUILD_PE) += efi.lds
 ifeq ($(XEN_BUILD_PE),y)
 $(TARGET).efi: $(obj)/efi/relocs-dummy.o $(obj)/efi/relocs-empty.o $(obj)/efi/mkreloc
-$(TARGET).efi: $(objtree)/prelink.o $(note_file) $(obj)/efi.lds
+$(TARGET).efi: $(objtree)/prelink.o $(note_file) $(obj)/efi.lds $(obj)/efi/fixmlehdr
 ifeq ($(CONFIG_DEBUG_INFO),y)
 	$(if $(filter --strip-debug,$(EFI_LDFLAGS)),echo,:) "Will strip debug info from $(@F)"
 endif
@@ -230,6 +236,10 @@ endif
 	$(LD) $(call EFI_LDFLAGS,$(VIRT_BASE)) -T $(obj)/efi.lds $< $(obj)/efi/relocs-empty.o \
 	      $(dot-target).2r.o $(dot-target).2s.o $(orphan-handling-y) \
 	      $(note_file_option) -o $@
+ifeq ($(CONFIG_SLAUNCH),y)
+	# update entry point's address by taking image offset into account
+	$(obj)/efi/fixmlehdr $@ $(XEN_IMG_OFFSET)
+endif
 	$(NM) -pa --format=sysv $@ \
 		| $(objtree)/tools/symbols --all-symbols --xensyms --sysv --sort \
 		> $@.map
