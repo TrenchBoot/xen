@@ -7,7 +7,14 @@
 #ifndef X86_EFI_EFI_BOOT_H
 #define X86_EFI_EFI_BOOT_H
 
+#include <xen/kernel.h>
 #include <xen/vga.h>
+
+/*
+ * Tell <asm/intel-txt.h> to access TXT registers without address translation
+ * which has not yet been set up.
+ */
+#define __EARLY_SLAUNCH__
 
 #include <asm/boot-helpers.h>
 #include <asm/e820.h>
@@ -17,8 +24,11 @@
 #include <asm/setup.h>
 #include <asm/trampoline.h>
 #include <asm/efi.h>
+#include <asm/intel-txt.h>
+#include <asm/slaunch.h>
 
 static struct file __initdata ucode;
+static uint64_t __initdata xen_image_size;
 static multiboot_info_t __initdata mbi = {
     .flags = MBI_MODULES | MBI_LOADERNAME
 };
@@ -234,9 +244,30 @@ static void __init efi_arch_pre_exit_boot(void)
     }
 }
 
-static void __init noreturn efi_arch_post_exit_boot(void)
+void __init asmlinkage noreturn start_xen_from_efi(void)
 {
     u64 cr4 = XEN_MINIMAL_CR4 & ~X86_CR4_PGE, efer;
+
+    if ( slaunch_active )
+    {
+        const struct slr_table *slrt = (const struct slr_table *)efi.slr;
+        const struct slr_entry_hdr *entry;
+
+        entry = slr_next_entry_by_tag(slrt, NULL, SLR_ENTRY_INTEL_INFO);
+        if ( entry != NULL )
+        {
+            const struct slr_entry_intel_info *intel_info =
+                container_of(entry, const struct slr_entry_intel_info, hdr);
+            void *txt_heap = txt_init();
+            const struct txt_os_mle_data *os_mle =
+                txt_start(txt_heap, TXT_OS2MLE);
+            const struct txt_os_sinit_data *os_sinit =
+                txt_start(txt_heap, TXT_OS2SINIT);
+
+            txt_verify_pmr_ranges(os_mle, os_sinit, intel_info, xen_phys_start,
+                                  xen_phys_start, xen_image_size);
+        }
+    }
 
     efi_arch_relocate_image(__XEN_VIRT_START - xen_phys_start);
     memcpy(_p(trampoline_phys), trampoline_start, cfg.size);
@@ -281,6 +312,66 @@ static void __init noreturn efi_arch_post_exit_boot(void)
                      [ds] "r" (__HYPERVISOR_DS)
                    : "memory" );
     unreachable();
+}
+
+static void __init attempt_secure_launch(void)
+{
+#ifdef CONFIG_SLAUNCH
+    const struct slr_table *slrt;
+    const struct slr_entry_hdr *entry;
+    const struct slr_entry_dl_info *dlinfo;
+    dl_handler_func handler_callback;
+
+    /* The presence of this table indicates a Secure Launch boot. */
+    slrt = (const struct slr_table *)efi.slr;
+    if ( efi.slr == EFI_INVALID_TABLE_ADDR || slrt->magic != SLR_TABLE_MAGIC ||
+         slrt->revision != SLR_TABLE_REVISION )
+        return;
+
+    /* Avoid calls into firmware after DRTM. */
+    __clear_bit(EFI_RS, &efi_flags);
+
+    /*
+     * Make measurements less sensitive to hardware-specific details.
+     *
+     * Intentionally leaving efi_ct and efi_num_ct intact.
+     */
+    efi_ih = NULL;
+    efi_bs = NULL;
+    efi_bs_revision = 0;
+    efi_rs = NULL;
+    efi_version = 0;
+    efi_fw_vendor = NULL;
+    efi_fw_revision = 0;
+    StdOut = NULL;
+    StdErr = NULL;
+    boot_tsc_stamp = 0;
+
+    slaunch_active = true;
+    slaunch_slrt = efi.slr;
+
+    /* Jump through DL stub to initiate Secure Launch. */
+    entry = slr_next_entry_by_tag(slrt, NULL, SLR_ENTRY_DL_INFO);
+    dlinfo = container_of(entry, const struct slr_entry_dl_info, hdr);
+
+    handler_callback = (dl_handler_func)dlinfo->dl_handler;
+    handler_callback(&dlinfo->bl_context);
+
+    unreachable();
+#endif
+}
+
+static void __init noreturn efi_arch_post_exit_boot(void)
+{
+    /*
+     * If Secure Launch happens, attempt_secure_launch() doesn't return and
+     * start_xen_from_efi() is invoked after DRTM has been initiated.
+     * Otherwise, attempt_secure_launch() returns and execution continues as
+     * usual.
+     */
+    attempt_secure_launch();
+
+    start_xen_from_efi();
 }
 
 static void __init efi_arch_cfg_file_early(const EFI_LOADED_IMAGE *image,
@@ -783,6 +874,7 @@ static void noreturn __init efi_arch_halt(void)
 static void __init efi_arch_load_addr_check(const EFI_LOADED_IMAGE *loaded_image)
 {
     xen_phys_start = (UINTN)loaded_image->ImageBase;
+    xen_image_size = loaded_image->ImageSize;
     if ( (xen_phys_start + loaded_image->ImageSize - 1) >> 32 )
         blexit(L"Xen must be loaded below 4Gb.");
     if ( xen_phys_start & ((1 << L2_PAGETABLE_SHIFT) - 1) )
