@@ -16,6 +16,9 @@
 #include <xen/multiboot.h>
 #include <xen/multiboot2.h>
 #include <asm/guest-msr.h>
+#ifdef CONFIG_SLAUNCH
+#include <asm/slaunch.h>
+#endif
 
 #ifdef CONFIG_VIDEO
 # include "../boot/video.h"
@@ -235,4 +238,11 @@ void __dummy__(void)
     DEFINE(BVI_size,            sizeof(struct boot_video_info));
     BLANK();
 #endif /* CONFIG_VIDEO */
+
+#ifdef CONFIG_SLAUNCH
+    OFFSET(SL_EIR_mbi_pa,   struct slaunch_early_init_results, mbi_pa);
+    OFFSET(SL_EIR_slrt_pa,  struct slaunch_early_init_results, slrt_pa);
+    DEFINE(SL_EIR_size,     sizeof(struct slaunch_early_init_results));
+    BLANK();
+#endif
 }
