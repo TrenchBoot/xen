@@ -62,6 +62,9 @@
 #define SLAUNCH_ERROR_BUFFER_BEYOND_PMR 0xc0008006U
 #define SLAUNCH_ERROR_HEAP_BAD_OS2MLE   0xc0008007U
 #define SLAUNCH_ERROR_HEAP_BAD_OS2SINIT 0xc0008008U
+#define SLAUNCH_ERROR_NO_VENDOR_INFO    0xc0008009U
+#define SLAUNCH_ERROR_BAD_VENDOR_INFO   0xc000800AU
+#define SLAUNCH_ERROR_BAD_SLRT_ADDRESS  0xc000800BU
 
 #ifndef __ASSEMBLER__
 
@@ -243,6 +246,23 @@ static inline void *txt_start(void *heap, int table_index)
     for (i = 0; i < table_index; ++i)
         heap += *(const uint64_t *)heap;
     return heap + sizeof(uint64_t);
+}
+
+static inline void *txt_init(void)
+{
+    void *txt_heap;
+
+    /* Clear the TXT error register for a clean start of the day. */
+    txt_write(TXTCR_ERRORCODE, 0);
+
+    txt_heap = _p(txt_read(TXTCR_HEAP_BASE));
+
+    if ( txt_size(txt_heap, TXT_OS2MLE) < sizeof(struct txt_os_mle_data) )
+        txt_reset(SLAUNCH_ERROR_HEAP_BAD_OS2MLE);
+    if ( txt_size(txt_heap, TXT_OS2SINIT) < sizeof(struct txt_os_sinit_data) )
+        txt_reset(SLAUNCH_ERROR_HEAP_BAD_OS2SINIT);
+
+    return txt_heap;
 }
 
 #endif /* !__ASSEMBLER__ */

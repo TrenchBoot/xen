@@ -506,8 +506,39 @@ __start:
          * bootloader with ESP, ESI and EDX being clobbered above.
          */
 
-        /* Hang as this boot path is yet to be implemented. */
-        jmp     .Lslaunch_proto
+        /* Save information that TrenchBoot slaunch was used. */
+        movb    $1, sym_esi(slaunch_active)
+
+        /*
+         * Prepare space for output parameter of slaunch_early_init(), which is
+         * the following structure:
+         *   struct slaunch_early_init_results
+         *   {
+         *       uint32_t mbi_pa;
+         *       uint32_t slrt_pa;
+         *   } __packed;
+         */
+        sub     $SL_EIR_size, %esp
+
+        push    %esp                              /* pointer to output structure */
+        mov     $sym_offs(__2M_rwdata_end), %ecx  /* end of target image */
+        mov     $sym_offs(_start), %edx           /* target base address */
+        mov     %esi, %eax                        /* load base address */
+        /*
+         * slaunch_early_init(load/eax, tgt/edx, tgt_end/ecx, ret/stk) using
+         * fastcall calling convention.
+         */
+        call    slaunch_early_init
+        add     $4, %esp                         /* pop the fourth parameter */
+
+        /* Move outputs of slaunch_early_init() from the stack. */
+        pop     %ebx                  /* store physical MBI address in EBX where
+                                         MB2 code expects it */
+        pop     sym_esi(slaunch_slrt) /* save physical address of SLRT for C
+                                         code */
+
+        /* Move magic number expected by Multiboot 2 to EAX and fall through. */
+        movl    $MULTIBOOT2_BOOTLOADER_MAGIC, %eax
 #endif
 
 .Lmultiboot2_proto:
