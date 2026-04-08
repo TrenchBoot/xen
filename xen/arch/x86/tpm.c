@@ -73,6 +73,11 @@ static uint8_t tpm_read8(unsigned int reg)
     return *(volatile uint8_t *)__va(TPM_MMIO_BASE + reg);
 }
 
+static void tpm_write32(unsigned int reg, uint32_t val)
+{
+    *(volatile uint32_t *)__va(TPM_MMIO_BASE + reg) = val;
+}
+
 static void tpm_write8(unsigned int reg, uint8_t val)
 {
     *(volatile uint8_t *)__va(TPM_MMIO_BASE + reg) = val;
@@ -110,6 +115,31 @@ static bool tpm_is_crb(void)
 #define STS_VALID                (1 << 7)
 #define TIS_BURST_COUNT_(x)     TPM_LOC_REG(x, 0x19)  /* the middle of STS */
 #define TIS_DATA_FIFO_(x)       TPM_LOC_REG(x, 0x24)
+
+/************************** CRB register definitions **************************/
+
+#define CRB_LOC_STATE_(x)       TPM_LOC_REG(x, 0x00)
+#define CRB_LOC_STATE_LOC_ASSIGNED   (1 << 1)
+#define CRB_LOC_STATE_REG_VALID_STS  (1 << 7)
+#define CRB_LOC_CTRL_(x)        TPM_LOC_REG(x, 0x08)
+#define CRB_LOC_CTRL_REQUEST_ACCESS  (1 << 0)
+#define CRB_LOC_CTRL_RELINQUISH      (1 << 1)
+#define CRB_CTRL_REQ_(x)        TPM_LOC_REG(x, 0x40)
+#define CRB_CTRL_REQ_CMD_READY       (1 << 0)
+#define CRB_CTRL_REQ_GO_IDLE         (1 << 1)
+#define CRB_CTRL_STS_(x)        TPM_LOC_REG(x, 0x44)
+#define CRB_CTRL_STS_ERROR           (1 << 0)
+#define CRB_CTRL_CANCEL_(x)     TPM_LOC_REG(x, 0x48)
+#define CRB_CTRL_CANCEL_INVOKE       (1 << 0)
+#define CRB_CTRL_START_(x)      TPM_LOC_REG(x, 0x4C)
+#define CRB_CTRL_START_INVOKE        (1 << 0)
+#define CRB_CTRL_CMD_SIZE_(x)   TPM_LOC_REG(x, 0x58)
+#define CRB_CTRL_CMD_LADDR_(x)  TPM_LOC_REG(x, 0x5C)
+#define CRB_CTRL_CMD_HADDR_(x)  TPM_LOC_REG(x, 0x60)
+#define CRB_CTRL_RSP_SIZE_(x)   TPM_LOC_REG(x, 0x64)
+#define CRB_CTRL_RSP_ADDR_(x)   TPM_LOC_REG(x, 0x68)
+#define CRB_DATA_BUFFER_(x)     TPM_LOC_REG(x, 0x80)
+#define CRB_DATA_BUFFER_SIZE    0x0F80
 
 /************************** TIS locality & command ****************************/
 
@@ -196,12 +226,110 @@ static void tis_send_cmd(unsigned int loc, uint8_t *buf, unsigned int i_size,
     tpm_write8(TIS_STS_(loc), STS_COMMAND_READY);
 }
 
+/************************** CRB locality & command ****************************/
+
+static void crb_request_locality(unsigned int loc)
+{
+    const uint32_t mask = CRB_LOC_STATE_LOC_ASSIGNED |
+                          CRB_LOC_STATE_REG_VALID_STS;
+
+    tpm_write32(CRB_LOC_CTRL_(loc), CRB_LOC_CTRL_REQUEST_ACCESS);
+    while ( (tpm_read32(CRB_LOC_STATE_(loc)) & mask) != mask )
+        ;
+}
+
+static void crb_relinquish_locality(unsigned int loc)
+{
+    tpm_write32(CRB_LOC_CTRL_(loc), CRB_LOC_CTRL_RELINQUISH);
+    while ( tpm_read32(CRB_LOC_STATE_(loc)) & CRB_LOC_STATE_LOC_ASSIGNED )
+        ;
+}
+
+static void crb_cmd_ready(unsigned int loc)
+{
+    tpm_write32(CRB_CTRL_REQ_(loc), CRB_CTRL_REQ_CMD_READY);
+    while ( tpm_read32(CRB_CTRL_REQ_(loc)) & CRB_CTRL_REQ_CMD_READY )
+        ;
+}
+
+static void crb_go_idle(unsigned int loc)
+{
+    tpm_write32(CRB_CTRL_REQ_(loc), CRB_CTRL_REQ_GO_IDLE);
+    while ( tpm_read32(CRB_CTRL_REQ_(loc)) & CRB_CTRL_REQ_GO_IDLE )
+        ;
+}
+
+static void crb_send_cmd(unsigned int loc, uint8_t *buf, unsigned int i_size,
+                         unsigned int *o_size)
+{
+    paddr_t data_buf_pa = TPM_MMIO_BASE + CRB_DATA_BUFFER_(loc);
+    unsigned int expected;
+
+    if ( i_size > CRB_DATA_BUFFER_SIZE || *o_size < sizeof(struct tpm_rsp_hdr) )
+    {
+        *o_size = 0;
+        return;
+    }
+
+    /* Out of caution, make sure no previous command is still executing. */
+    while ( tpm_read32(CRB_CTRL_START_(loc)) & CRB_CTRL_START_INVOKE )
+        ;
+
+    crb_cmd_ready(loc);
+
+    /* In an unlikely event that TPM signals irrecoverable error here,
+     * better bail out than hang in infinite loop waiting for the
+     * start condition later. */
+    if ( tpm_read32(CRB_CTRL_STS_(loc)) & CRB_CTRL_STS_ERROR )
+    {
+        *o_size = 0;
+        crb_go_idle(loc);
+        return;
+    }
+
+    tpm_write32(CRB_CTRL_CANCEL_(loc), 0);
+
+    tpm_write32(CRB_CTRL_CMD_LADDR_(loc), data_buf_pa);
+    tpm_write32(CRB_CTRL_CMD_HADDR_(loc), 0);
+    tpm_write32(CRB_CTRL_CMD_SIZE_(loc), CRB_DATA_BUFFER_SIZE);
+    tpm_write32(CRB_CTRL_RSP_SIZE_(loc), CRB_DATA_BUFFER_SIZE);
+    /* RSP_ADDR is 64-bit. */
+    tpm_write32(CRB_CTRL_RSP_ADDR_(loc), data_buf_pa);
+    tpm_write32(CRB_CTRL_RSP_ADDR_(loc) + 4, 0);
+
+    memcpy(__va(data_buf_pa), buf, i_size);
+
+    tpm_write32(CRB_CTRL_START_(loc), CRB_CTRL_START_INVOKE);
+    while ( tpm_read32(CRB_CTRL_START_(loc)) & CRB_CTRL_START_INVOKE )
+        ;
+
+    if ( tpm_read32(CRB_CTRL_STS_(loc)) & CRB_CTRL_STS_ERROR )
+    {
+        *o_size = 0;
+        crb_go_idle(loc);
+        return;
+    }
+
+    /* Read header to learn the response length. */
+    memcpy(buf, __va(data_buf_pa), sizeof(struct tpm_rsp_hdr));
+    expected = swap32(((struct tpm_rsp_hdr *)buf)->paramSize);
+    if ( expected > *o_size )
+        expected = *o_size;
+    if ( expected > CRB_DATA_BUFFER_SIZE )
+        expected = CRB_DATA_BUFFER_SIZE;
+
+    memcpy(buf, __va(data_buf_pa), expected);
+
+    *o_size = expected;
+    crb_go_idle(loc);
+}
+
 /************************** Interface dispatch ********************************/
 
 static void request_locality(unsigned int loc)
 {
     if ( tpm_is_crb() )
-        return;
+        crb_request_locality(loc);
     else
         tis_request_locality(loc);
 }
@@ -209,7 +337,7 @@ static void request_locality(unsigned int loc)
 static void relinquish_locality(unsigned int loc)
 {
     if ( tpm_is_crb() )
-        return;
+        crb_relinquish_locality(loc);
     else
         tis_relinquish_locality(loc);
 }
@@ -218,7 +346,7 @@ static void send_cmd(unsigned int loc, uint8_t *buf, unsigned int i_size,
                      unsigned int *o_size)
 {
     if ( tpm_is_crb() )
-        *o_size = 0;
+        crb_send_cmd(loc, buf, i_size, o_size);
     else
         tis_send_cmd(loc, buf, i_size, o_size);
 }
