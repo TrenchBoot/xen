@@ -460,13 +460,14 @@ static uint32_t tpm2_hash_extend(unsigned loc, const uint8_t *buf,
     o_size = sizeof(cmd_rsp);
     send_cmd(loc, cmd_rsp.b, swap32(cmd_rsp.c.paramSize), &o_size);
 
-    if ( cmd_rsp.r.tag == swap16(TPM_ST_NO_SESSIONS) &&
-         cmd_rsp.r.paramSize == swap32(10) )
+    if ( o_size < sizeof(struct tpm_rsp_hdr) )
     {
-        rc = swap32(cmd_rsp.r.returnCode);
-        if ( rc != 0 )
-            goto error;
+        rc = -1;
+        goto error;
     }
+    rc = swap32(cmd_rsp.r.returnCode);
+    if ( rc != 0 )
+        goto error;
 
     seq_handle = swap32(cmd_rsp.start_r.sequenceHandle);
 
@@ -490,13 +491,14 @@ static uint32_t tpm2_hash_extend(unsigned loc, const uint8_t *buf,
         o_size = sizeof(cmd_rsp);
         send_cmd(loc, cmd_rsp.b, swap32(cmd_rsp.c.paramSize), &o_size);
 
-        if ( cmd_rsp.r.tag == swap16(TPM_ST_NO_SESSIONS) &&
-             cmd_rsp.r.paramSize == swap32(10) )
+        if ( o_size < sizeof(struct tpm_rsp_hdr) )
         {
-            rc = swap32(cmd_rsp.r.returnCode);
-            if ( rc != 0 )
-                goto error;
+            rc = -1;
+            goto error;
         }
+        rc = swap32(cmd_rsp.r.returnCode);
+        if ( rc != 0 )
+            goto error;
 
         size -= max_bytes;
         buf += max_bytes;
@@ -519,12 +521,19 @@ static uint32_t tpm2_hash_extend(unsigned loc, const uint8_t *buf,
     o_size = sizeof(cmd_rsp);
     send_cmd(loc, cmd_rsp.b, swap32(cmd_rsp.c.paramSize), &o_size);
 
-    if ( cmd_rsp.r.tag == swap16(TPM_ST_NO_SESSIONS) &&
-         cmd_rsp.r.paramSize == swap32(10) )
+    if ( o_size < sizeof(struct tpm_rsp_hdr) )
     {
-        rc = swap32(cmd_rsp.r.returnCode);
-        if ( rc != 0 )
-            goto error;
+        rc = -1;
+        goto error;
+    }
+    rc = swap32(cmd_rsp.r.returnCode);
+    if ( rc != 0 )
+        goto error;
+
+    if ( o_size < sizeof(cmd_rsp.finish_r) )
+    {
+        rc = -1;
+        goto error;
     }
 
     p = cmd_rsp.finish_r.hashes;
@@ -533,6 +542,11 @@ static uint32_t tpm2_hash_extend(unsigned loc, const uint8_t *buf,
         unsigned j;
         uint16_t hash_type;
 
+        if ( p + sizeof(uint16_t) > cmd_rsp.b + o_size )
+        {
+            rc = -1;
+            goto error;
+        }
         hash_type = swap16(*(uint16_t *)p);
         p += sizeof(uint16_t);
 
@@ -541,6 +555,11 @@ static uint32_t tpm2_hash_extend(unsigned loc, const uint8_t *buf,
             struct tpm2_log_hash *hash = &log_hashes->hashes[j];
             if ( hash->alg == hash_type )
             {
+                if ( p + hash->size > cmd_rsp.b + o_size )
+                {
+                    rc = -1;
+                    goto error;
+                }
                 memcpy(hash->data, p, hash->size);
                 p += hash->size;
                 break;
