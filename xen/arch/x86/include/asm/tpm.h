@@ -9,8 +9,8 @@
 
 #include <xen/types.h>
 
-#define TPM_TIS_BASE  0xfed40000U
-#define TPM_TIS_SIZE  0x00010000U
+#define TPM_BASE      0xfed40000U
+#define TPM_SIZE      0x00010000U
 
 /* All fields of the following structs are big endian. */
 

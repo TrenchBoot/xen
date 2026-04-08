@@ -104,7 +104,7 @@ void __init slaunch_map_mem_regions(void)
     paddr_t evt_log_addr;
     uint32_t evt_log_size;
 
-    rc = slaunch_map_l2(TPM_TIS_BASE, TPM_TIS_SIZE);
+    rc = slaunch_map_l2(TPM_BASE, TPM_SIZE);
     BUG_ON(rc != 0);
 
     /* Vendor-specific part. */
