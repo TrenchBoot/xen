@@ -1,0 +1,164 @@
+name: Rebase and build the last successful automatic rebase of aem-next branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: >
+          Set this input to do a dry run without building the packages to test
+          the rebase.
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: '0 0 * * 6'
+
+concurrency:
+  group: automatic-rebase
+
+jobs:
+  prep-rebase:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout qubes-vmm-xen
+        uses: actions/checkout@v6
+        with:
+          repository: QubesOS/qubes-vmm-xen
+          path: qubes-vmm-xen
+      - name: Checkout downstream xen repository
+        uses: actions/checkout@v6
+        with:
+          repository: TrenchBoot/xen
+          token: ${{ secrets.TRENCHBOOT_REBASE_TOKEN }}
+          path: xen
+      - name: Read upstream version from qubes-vmm-xen
+        id: version
+        working-directory: qubes-vmm-xen
+        run: echo "version=$(cat version)" >> "$GITHUB_OUTPUT"
+      - name: Add upstream remote and fetch version tag
+        working-directory: xen
+        env:
+          UPSTREAM_TAG: RELEASE-${{ steps.version.outputs.version }}
+        run: |
+          git remote add upstream https://xenbits.xenproject.org/git-http/xen.git
+          git fetch upstream "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
+      - name: Apply qubes-vmm-xen patches on top of upstream tag
+        working-directory: xen
+        env:
+          UPSTREAM_TAG: RELEASE-${{ steps.version.outputs.version }}
+        run: |
+          git checkout -b qubes-vmm-xen-with-patches-rebase-prep "$UPSTREAM_TAG"
+          SPEC="../qubes-vmm-xen/xen.spec.in"
+          mapfile -t PATCHES < <(grep -E '^Patch[0-9]+:' "$SPEC" | awk '{print $2}')
+          for patch_file in "${PATCHES[@]}"; do
+            git apply "../qubes-vmm-xen/${patch_file}"
+            escaped=$(printf '%s' "$patch_file" | sed 's/\./\\./g')
+            sed -i "/^Patch[0-9]*:[[:space:]]*${escaped}[[:space:]]*$/d" "$SPEC"
+            rm -f "../qubes-vmm-xen/${patch_file}"
+          done
+      - name: Copy QubesOS RPM files to downstream repository, rename spec.in
+        # Notes:
+        # 1. Renaming QubesOS/qubes-vmm-xen/config to
+        #    TrenchBoot/xen/config-qubesos, so it will not conflict with an
+        #    already existing directory "config" in the xen source code.
+        # 2. Renaming QubesOS/qubes-vmm-xen/xen.spec.in to
+        #    QubesOS/qubes-vmm-xen/vmm-xen.spec.in. This is done because the
+        #    qubes-dom0-packagev2.yml expects the file to have a name
+        #    ${{ inputs.qubes-component }}.spec.in and the correct name for this
+        #    component in QubesOS is vmm-xen, not xen.
+        run: |
+          mv qubes-vmm-xen/config qubes-vmm-xen/config-qubesos
+          sed -i 's/^Source3:[[:space:]]*config$/Source3: config-qubesos/' qubes-vmm-xen/xen.spec.in
+          cp -r qubes-vmm-xen/* xen/
+          mv xen/xen.spec.in xen/vmm-xen.spec.in
+          cd xen
+          git add -A
+          GIT_AUTHOR_NAME="github-actions[bot]" \
+          GIT_AUTHOR_EMAIL="github-actions[bot]@users.noreply.github.com" \
+          GIT_AUTHOR_DATE="2024-01-01T00:00:00" \
+          GIT_COMMITTER_NAME="github-actions[bot]" \
+          GIT_COMMITTER_EMAIL="github-actions[bot]@users.noreply.github.com" \
+          GIT_COMMITTER_DATE="2024-01-01T00:00:00" \
+          git commit --no-gpg-sign -m "QubesOS patches, QubesOS RPM files and Qubes builder metadata"
+      - name: Push qubes-vmm-xen-with-patches branch to downstream
+        working-directory: xen
+        run: git push origin qubes-vmm-xen-with-patches-rebase-prep
+  try-rebase:
+    needs: prep-rebase
+    uses: TrenchBoot/.github/.github/workflows/rebase.yml@v1
+    secrets:
+      first-remote-token: ${{secrets.TRENCHBOOT_REBASE_TOKEN}}
+    permissions:
+      # For creation/deletion/pushing to branches and creating PRs
+      contents: write
+    with:
+      downstream-repo: 'https://github.com/TrenchBoot/xen.git'
+      downstream-branch: 'aem-next'
+      upstream-repo: 'https://github.com/TrenchBoot/xen.git'
+      upstream-branch: 'qubes-vmm-xen-with-patches-rebase-prep'
+      commit-user-name: 'github-actions[bot]'
+      commit-user-email: 'github-actions[bot]@users.noreply.github.com'
+      cicd-trigger-resume: '7. Rerun the workflow https://github.com/TrenchBoot/xen/actions/runs/${{ github.run_id }} to resume automated rebase.'
+  cleanup-after-rebase-attempt:
+    needs: try-rebase
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout downstream xen repository
+        uses: actions/checkout@v6
+        with:
+          repository: TrenchBoot/xen
+          token: ${{ secrets.TRENCHBOOT_REBASE_TOKEN }}
+          path: xen
+      - name: Delete qubes-vmm-xen-with-patches branch from downstream
+        working-directory: xen
+        env:
+          TOKEN: ${{ secrets.TRENCHBOOT_REBASE_TOKEN }}
+        run: |
+          git push "https://${TOKEN}@github.com/TrenchBoot/xen.git" \
+            --delete qubes-vmm-xen-with-patches-rebase-prep
+  get-version:
+    runs-on: ubuntu-latest
+    needs: try-rebase
+    if: ${{ inputs.dry_run != 'true' }}
+    outputs:
+      version: ${{ steps.read-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 'aem-next-rebased'
+      - name: Read version of the QubesOS Component from version file
+        id: read-version
+        # The aem-next-rebased should already have the version file either created
+        # in the prep-rebase or try-rebase jobs (it will be probably created by
+        # the prep-rebase as this file is a part of QubesOS repository) on which
+        # it depennds:
+        run: echo "version=$(cat version)" >> "$GITHUB_OUTPUT"
+  qubes-dom0-package:
+    needs: get-version
+    uses: TrenchBoot/.github/.github/workflows/qubes-dom0-packagev2.yml@v1
+    with:
+      qubes-component: 'vmm-xen'
+      qubes-component-branch: 'aem-next-rebased'
+      qubes-pkg-src-dir: '.'
+      qubes-pkg-version: ${{ needs.get-version.outputs.version }}
+  trigger-woodpecker-cicd:
+    needs: qubes-dom0-package
+    uses: TrenchBoot/.github/.github/workflows/trigger-woodpecker-pipeline.yml@v1
+    secrets:
+      woodpecker-token: ${{ secrets.WOODPECKER_TOKEN }}
+    with:
+      api-url:  'https://ci.3mdeb.com'
+      owner:    'zarhus'
+      repo:     'trenchboot-release-cicd-pipeline'
+      ref:      'master'
+      inputs: >-
+        --input GITHUB_REPO=xen
+        --input GITHUB_SHA=${{ github.sha }}
+        --input GITHUB_RUN_ID=${{ github.run_id }}
+        --input QUBES_COMPONENT=vmm-xen
+        --input WORKFLOW=sign-and-publish-test-rpms
