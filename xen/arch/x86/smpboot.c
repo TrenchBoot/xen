@@ -240,6 +240,27 @@ static void smp_callin(void)
         cpu_relax();
 }
 
+static int txt_booting_apicid;
+
+void asmlinkage txt_ap_gate(int apicid)
+{
+    uint64_t misc_enable;
+    const struct txt_sinit_mle_data *sinit_mle =
+          txt_start(__va(txt_read(TXTCR_HEAP_BASE)), TXT_SINIT2MLE);
+
+    /* TXT released us with MONITOR disabled in IA32_MISC_ENABLE. */
+    rdmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
+    wrmsrl(MSR_IA32_MISC_ENABLE,
+           misc_enable | MSR_IA32_MISC_ENABLE_MONITOR_ENABLE);
+
+    while ( txt_booting_apicid != apicid )
+    {
+        asm volatile ( "monitor; xor %0,%0; mwait"
+                       :: "a"(__va(sinit_mle->rlp_wakeup_addr)), "c"(0),
+                       "d"(0) : "memory" );
+    }
+}
+
 /* CPUs for which sibling maps can be computed. */
 static cpumask_t cpu_sibling_setup_map;
 
@@ -332,29 +353,6 @@ void asmlinkage start_secondary(void)
     struct cpu_info *info = get_cpu_info();
     unsigned int cpu = smp_processor_id();
 
-    if ( ap_boot_method == AP_BOOT_TXT ) {
-        uint64_t misc_enable;
-        uint32_t my_apicid;
-        const struct txt_sinit_mle_data *sinit_mle =
-              txt_start(__va(txt_read(TXTCR_HEAP_BASE)), TXT_SINIT2MLE);
-
-        /* TXT released us with MONITOR disabled in IA32_MISC_ENABLE. */
-        rdmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
-        wrmsrl(MSR_IA32_MISC_ENABLE,
-               misc_enable | MSR_IA32_MISC_ENABLE_MONITOR_ENABLE);
-
-        /* get_apic_id() reads from x2APIC if it thinks it is enabled. */
-        x2apic_ap_setup();
-        my_apicid = get_apic_id();
-
-        while ( my_apicid != x86_cpu_to_apicid[cpu] ) {
-            asm volatile ("monitor; xor %0,%0; mwait"
-                          :: "a"(__va(sinit_mle->rlp_wakeup_addr)), "c"(0),
-                          "d"(0) : "memory");
-            cpu = smp_processor_id();
-        }
-    }
-
     rdmsrl(MSR_EFER, this_cpu(efer));
 
     /*
@@ -441,7 +439,7 @@ void asmlinkage start_secondary(void)
     startup_cpu_idle_loop();
 }
 
-static int wake_aps_in_txt(void)
+static int wake_ap_in_txt(int phys_apicid)
 {
     const struct txt_sinit_mle_data *sinit_mle =
               txt_start(__va(txt_read(TXTCR_HEAP_BASE)), TXT_SINIT2MLE);
@@ -454,6 +452,8 @@ static int wake_aps_in_txt(void)
     join[3] = bootsym_phys(txt_ap_entry);   /* EIP */
 
     txt_write(TXTCR_MLE_JOIN, __pa(join));
+
+    txt_booting_apicid = phys_apicid;
 
     smp_mb();
 
@@ -485,7 +485,7 @@ static int wakeup_secondary_cpu(int phys_apicid, unsigned long start_eip)
         return 0;
 
     if ( ap_boot_method == AP_BOOT_TXT )
-        return wake_aps_in_txt();
+        return wake_ap_in_txt(phys_apicid);
 
     /*
      * Be paranoid about clearing APIC errors.
