@@ -255,9 +255,12 @@ void asmlinkage txt_ap_gate(int apicid)
 
     while ( txt_booting_apicid != apicid )
     {
-        asm volatile ( "monitor; xor %0,%0; mwait"
+        asm volatile ( "monitor"
                        :: "a"(__va(sinit_mle->rlp_wakeup_addr)), "c"(0),
                        "d"(0) : "memory" );
+        if ( txt_booting_apicid == apicid )
+            break;
+        asm volatile ( "mwait" :: "a"(0), "c"(0) );
     }
 }
 
