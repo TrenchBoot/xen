@@ -1,0 +1,31 @@
+name: Build and package QubesOS RC RPMs
+
+on:
+  push:
+    tags:
+      - 'v*-rc*'
+
+jobs:
+  qubes-dom0-package:
+    uses: TrenchBoot/.github/.github/workflows/qubes-dom0-package.yml@v1
+    with:
+      base-commit: 'e2cb10f236c83f1f1d78c04cc236e2935176f282'
+      patch-start: 1300
+      qubes-component: 'vmm-xen'
+      spec-pattern: '/^Patch1202:/'
+  trigger-woodpecker-cicd:
+    needs: qubes-dom0-package
+    uses: TrenchBoot/.github/.github/workflows/trigger-woodpecker-pipeline.yml@v1
+    secrets:
+      woodpecker-token: ${{ secrets.WOODPECKER_TOKEN }}
+    with:
+      api-url:  'https://ci.3mdeb.com'
+      owner:    'zarhus'
+      repo:     'trenchboot-release-cicd-pipeline'
+      ref:      'master'
+      inputs: >-
+        --input GITHUB_REPO=xen
+        --input GITHUB_SHA=${{ github.sha }}
+        --input GITHUB_RUN_ID=${{ github.run_id }}
+        --input QUBES_COMPONENT=vmm-xen
+        --input WORKFLOW=sign-and-publish-test-rpms
