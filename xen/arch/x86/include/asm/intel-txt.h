@@ -245,8 +245,8 @@ struct txt_ev_log_container_12 {
  */
 struct txt_ext_data_element {
     uint32_t type;   /* One of TXT_HEAP_EXTDATA_TYPE_*. */
-    uint32_t size;
-    uint8_t data[0]; /* size bytes. */
+    uint32_t size;   /* Size of the whole element (header + data), in bytes. */
+    uint8_t data[0];
 } __packed;
 
 /*
