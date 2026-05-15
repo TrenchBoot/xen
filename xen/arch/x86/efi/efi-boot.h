@@ -261,11 +261,12 @@ void __init asmlinkage noreturn start_xen_from_efi(void)
             void *txt_heap = txt_init();
             const struct txt_os_mle_data *os_mle =
                 txt_start(txt_heap, TXT_OS2MLE);
-            const struct txt_os_sinit_data *os_sinit =
+            struct txt_os_sinit_data *os_sinit =
                 txt_start(txt_heap, TXT_OS2SINIT);
 
-            txt_verify_pmr_ranges(os_mle, os_sinit, intel_info, xen_phys_start,
-                                  xen_phys_start, xen_image_size);
+            txt_verify_dma_protection(os_mle, os_sinit, intel_info,
+                                      xen_phys_start, xen_phys_start,
+                                      xen_image_size);
         }
     }
 
