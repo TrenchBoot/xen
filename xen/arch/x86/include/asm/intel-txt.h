@@ -327,6 +327,29 @@ static inline void *txt_init(void)
     return txt_heap;
 }
 
+/*
+ * Find the given element in the TXT heap extended data.
+ */
+static inline struct txt_ext_data_element *
+txt_find_ext_data_element(struct txt_os_sinit_data *os_sinit, uint32_t type)
+{
+    struct txt_ext_data_element *ext_elem;
+
+    ext_elem = (struct txt_ext_data_element *)
+        ((uint8_t *)os_sinit + sizeof(struct txt_os_sinit_data));
+
+    while ( ext_elem->type != TXT_HEAP_EXTDATA_TYPE_END )
+    {
+        if ( ext_elem->type == type )
+            return ext_elem;
+
+        ext_elem = (struct txt_ext_data_element *)
+            ((uint8_t *)ext_elem + ext_elem->size);
+    }
+
+    return NULL;
+}
+
 static inline bool is_in_pmr(const struct txt_os_sinit_data *os_sinit,
                              uint64_t base, uint32_t size, bool check_high)
 {
