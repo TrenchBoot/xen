@@ -898,20 +898,9 @@ find_evt_log_ext_data(struct tpm2_spec_id_event *evt_log)
     }
 
     os_sinit = txt_start(__va(txt_read(TXTCR_HEAP_BASE)), TXT_OS2SINIT);
-    ext_data = (struct txt_ext_data_element *)&os_sinit[1];
-
-    /*
-     * Find TXT_HEAP_EXTDATA_TYPE_EVENT_LOG_POINTER2_1 which is necessary to
-     * know where to put the next entry.
-     */
-    while ( ext_data->type != TXT_HEAP_EXTDATA_TYPE_END )
-    {
-        if ( ext_data->type == TXT_HEAP_EXTDATA_TYPE_EVENT_LOG_POINTER2_1 )
-            break;
-        ext_data = (void *)&ext_data->data[ext_data->size];
-    }
-
-    if ( ext_data->type == TXT_HEAP_EXTDATA_TYPE_END )
+    ext_data = txt_find_ext_data_element(os_sinit,
+                                         TXT_HEAP_EXTDATA_TYPE_EVENT_LOG_POINTER2_1);
+    if ( ext_data == NULL )
         return NULL;
 
     return (struct heap_event_log_pointer_element2_1 *)ext_data->data;
