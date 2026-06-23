@@ -1,0 +1,19 @@
+
+config SECURITY_DEVICES
+	bool "Security Devices (UNSUPPORTED)" if UNSUPPORTED
+	default n
+	---help---
+	  Enable Xen to manage and use platform security hardware.
+
+	  Say Y here if your platform has security hardware.
+
+config TPM_HARDWARE
+	bool "TPM Support"
+	default y
+	depends on SECURITY_DEVICES
+	select CRYPTO
+	---help---
+	  Xen will take control of a TPM, if present, and make it available
+	  for the hypervisor and domains.
+
+	  Say Y here if it is desired for Xen to use the TPM.

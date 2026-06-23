@@ -1,4 +1,5 @@
 obj-$(CONFIG_X86) += x86/
+obj-$(CONFIG_CRYPTO) += crypto/
 
 lib-y += bsearch.o
 lib-y += ctors.o

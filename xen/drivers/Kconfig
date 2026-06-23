@@ -10,6 +10,8 @@ source "drivers/passthrough/Kconfig"
 
 source "drivers/pci/Kconfig"
 
+source "drivers/security/Kconfig"
+
 source "drivers/video/Kconfig"
 
 config HAS_VPCI
