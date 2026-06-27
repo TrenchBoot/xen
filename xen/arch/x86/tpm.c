@@ -12,11 +12,13 @@
 
 #include <xen/byteorder.h>
 #include <xen/sha1.h>
+#include <xen/sha2.h>
 #include <xen/string.h>
 #include <xen/types.h>
 
 #include <asm/tpm.h>
 #include <asm/tpm1.h>
+#include <asm/tpm2.h>
 
 #ifdef __EARLY_TPM__
 
@@ -73,6 +75,22 @@ static uint8_t tpm_read8(unsigned int reg)
 static void tpm_write8(unsigned int reg, uint8_t val)
 {
     *(volatile uint8_t *)__va(TPM_MMIO_BASE + reg) = val;
+}
+
+/************************** Interface detection *******************************/
+
+#define TPM_INTF_ID_(x)         TPM_LOC_REG(x, 0x30)
+#define INTF_TYPE_MASK           0x0000000fU
+#define INTF_TYPE_TIS            0x00
+#define INTF_TYPE_CRB            0x01
+
+/*
+ * No static caching: the early 32-bit binary (tpm_early.bin) is built with
+ * "objcopy -j .text", which omits .bss/.data.
+ */
+static bool tpm_is_crb(void)
+{
+    return (tpm_read32(TPM_INTF_ID_(0)) & INTF_TYPE_MASK) == INTF_TYPE_CRB;
 }
 
 /************************** TIS register definitions **************************/
@@ -181,23 +199,36 @@ static void tis_send_cmd(unsigned int loc, uint8_t *buf, unsigned int i_size,
 
 static void request_locality(unsigned int loc)
 {
-    tis_request_locality(loc);
+    if ( tpm_is_crb() )
+        return;
+    else
+        tis_request_locality(loc);
 }
 
 static void relinquish_locality(unsigned int loc)
 {
-    tis_relinquish_locality(loc);
+    if ( tpm_is_crb() )
+        return;
+    else
+        tis_relinquish_locality(loc);
 }
 
 static void send_cmd(unsigned int loc, uint8_t *buf, unsigned int i_size,
                      unsigned int *o_size)
 {
-    tis_send_cmd(loc, buf, i_size, o_size);
+    if ( tpm_is_crb() )
+        *o_size = 0;
+    else
+        tis_send_cmd(loc, buf, i_size, o_size);
 }
 
 bool tpm_is_tpm1(void)
 {
     uint32_t intf_version;
+
+    /* CRB interface is always TPM 2.0. */
+    if ( tpm_is_crb() )
+        return false;
 
     /*
      * If one of these conditions is true:
@@ -211,14 +242,19 @@ bool tpm_is_tpm1(void)
             !(tpm_read32(TIS_STS_(0)) & STS_FAMILY_MASK));
 }
 
-/****************************** TPM1.2 specific *******************************/
+/****************************** TPM1.2 & TPM2.0 *******************************/
 
-#ifdef __EARLY_TPM__
 /*
  * TPM1.2 is required to support commands of up to 1101 bytes, vendors rarely
  * go above that. Limit maximum size of block of data to be hashed to 1024.
+ *
+ * TPM2.0 should support hashing of at least 1024 bytes.
  */
 #define MAX_HASH_BLOCK      1024
+
+/****************************** TPM1.2 specific *******************************/
+
+#ifdef __EARLY_TPM__
 #define CMD_RSP_BUF_SIZE    (sizeof(struct sha1_update_cmd) + MAX_HASH_BLOCK)
 
 union cmd_rsp {
@@ -382,6 +418,298 @@ static uint32_t tpm12_hash_extend(unsigned int loc, const uint8_t *buf,
 
 /************************** end of TPM1.2 specific ****************************/
 
+/****************************** TPM2.0 specific *******************************/
+
+#ifdef __EARLY_TPM__
+
+union tpm2_cmd_rsp {
+    uint8_t b[sizeof(struct tpm2_sequence_update_cmd) + MAX_HASH_BLOCK];
+    struct tpm_cmd_hdr c;
+    struct tpm_rsp_hdr r;
+    struct tpm2_sequence_start_cmd start_c;
+    struct tpm2_sequence_start_rsp start_r;
+    struct tpm2_sequence_update_cmd update_c;
+    struct tpm2_sequence_update_rsp update_r;
+    struct tpm2_sequence_complete_cmd finish_c;
+    struct tpm2_sequence_complete_rsp finish_r;
+};
+
+static uint32_t tpm2_hash_extend(unsigned int loc, const uint8_t *buf,
+                                 unsigned int size, unsigned int pcr,
+                                 const struct tpm_log_hashes *log_hashes)
+{
+    uint32_t seq_handle;
+    unsigned int max_bytes = MAX_HASH_BLOCK;
+
+    union tpm2_cmd_rsp cmd_rsp;
+    unsigned int o_size;
+    unsigned int i;
+    uint8_t *p;
+    uint32_t rc;
+
+    cmd_rsp.start_c = (struct tpm2_sequence_start_cmd) {
+        .h.tag = cpu_to_be16(TPM_ST_NO_SESSIONS),
+        .h.paramSize = cpu_to_be32(sizeof(cmd_rsp.start_c)),
+        .h.ordinal = cpu_to_be32(TPM2_PCR_HashSequenceStart),
+        /* Compute all supported hashes. */
+        .hashAlg = cpu_to_be16(TPM_ALG_NULL),
+    };
+
+    request_locality(loc);
+
+    o_size = sizeof(cmd_rsp);
+    send_cmd(loc, cmd_rsp.b, be32_to_cpu(cmd_rsp.c.paramSize), &o_size);
+
+    if ( o_size < sizeof(struct tpm_rsp_hdr) )
+    {
+        rc = TPM_INTERNAL_ERROR;
+        goto error;
+    }
+    rc = be32_to_cpu(cmd_rsp.r.returnCode);
+    if ( rc != 0 )
+        goto error;
+
+    seq_handle = be32_to_cpu(cmd_rsp.start_r.sequenceHandle);
+
+    while ( size > 64 )
+    {
+        if ( size < max_bytes )
+            max_bytes = ROUNDDOWN(size, 64);
+
+        cmd_rsp.update_c = (struct tpm2_sequence_update_cmd) {
+            .h.tag = cpu_to_be16(TPM_ST_SESSIONS),
+            .h.paramSize = cpu_to_be32(sizeof(cmd_rsp.update_c) + max_bytes),
+            .h.ordinal = cpu_to_be32(TPM2_PCR_SequenceUpdate),
+            .sequenceHandle = cpu_to_be32(seq_handle),
+            .sessionHdrSize = cpu_to_be32(sizeof(struct tpm2_session_header)),
+            .session.handle = cpu_to_be32(TPM_RS_PW),
+            .dataSize = cpu_to_be16(max_bytes),
+        };
+
+        memcpy(cmd_rsp.update_c.data, buf, max_bytes);
+
+        o_size = sizeof(cmd_rsp);
+        send_cmd(loc, cmd_rsp.b, be32_to_cpu(cmd_rsp.c.paramSize), &o_size);
+
+        if ( o_size < sizeof(struct tpm_rsp_hdr) )
+        {
+            rc = TPM_INTERNAL_ERROR;
+            goto error;
+        }
+        rc = be32_to_cpu(cmd_rsp.r.returnCode);
+        if ( rc != 0 )
+            goto error;
+
+        size -= max_bytes;
+        buf += max_bytes;
+    }
+
+    cmd_rsp.finish_c = (struct tpm2_sequence_complete_cmd) {
+        .h.tag = cpu_to_be16(TPM_ST_SESSIONS),
+        .h.paramSize = cpu_to_be32(sizeof(cmd_rsp.finish_c) + size),
+        .h.ordinal = cpu_to_be32(TPM2_PCR_EventSequenceComplete),
+        .pcrHandle = cpu_to_be32(HR_PCR + pcr),
+        .sequenceHandle = cpu_to_be32(seq_handle),
+        .sessionHdrSize = cpu_to_be32(sizeof(struct tpm2_session_header) * 2),
+        .pcrSession.handle = cpu_to_be32(TPM_RS_PW),
+        .sequenceSession.handle = cpu_to_be32(TPM_RS_PW),
+        .dataSize = cpu_to_be16(size),
+    };
+
+    memcpy(cmd_rsp.finish_c.data, buf, size);
+
+    o_size = sizeof(cmd_rsp);
+    send_cmd(loc, cmd_rsp.b, be32_to_cpu(cmd_rsp.c.paramSize), &o_size);
+
+    if ( o_size < sizeof(struct tpm_rsp_hdr) )
+    {
+        rc = TPM_INTERNAL_ERROR;
+        goto error;
+    }
+    rc = be32_to_cpu(cmd_rsp.r.returnCode);
+    if ( rc != 0 )
+        goto error;
+
+    if ( o_size < sizeof(cmd_rsp.finish_r) )
+    {
+        rc = TPM_INTERNAL_ERROR;
+        goto error;
+    }
+
+    p = cmd_rsp.finish_r.hashes;
+    for ( i = 0; i < be32_to_cpu(cmd_rsp.finish_r.hashCount); ++i )
+    {
+        unsigned int j;
+        uint16_t hash_type;
+
+        if ( p + sizeof(uint16_t) > cmd_rsp.b + o_size )
+        {
+            rc = TPM_INTERNAL_ERROR;
+            goto error;
+        }
+        hash_type = be16_to_cpu(*(uint16_t *)p);
+        p += sizeof(uint16_t);
+
+        for ( j = 0; j < log_hashes->count; ++j )
+        {
+            const struct tpm_log_hash *hash = &log_hashes->hashes[j];
+            if ( hash->alg == hash_type )
+            {
+                if ( p + hash->size > cmd_rsp.b + o_size )
+                {
+                    rc = TPM_INTERNAL_ERROR;
+                    goto error;
+                }
+                memcpy(hash->data, p, hash->size);
+                p += hash->size;
+                break;
+            }
+        }
+
+        if ( j == log_hashes->count )
+            /* Can't continue parsing without knowing hash size. */
+            break;
+    }
+
+    rc = 0;
+
+ error:
+    relinquish_locality(loc);
+    return rc;
+}
+
+#else
+
+union tpm2_cmd_rsp {
+    /* Enough space for multiple hashes. */
+    uint8_t b[sizeof(struct tpm2_extend_cmd) + 1024];
+    struct tpm_cmd_hdr c;
+    struct tpm_rsp_hdr r;
+    struct tpm2_extend_cmd extend_c;
+    struct tpm2_extend_rsp extend_r;
+};
+
+static uint32_t tpm20_pcr_extend(unsigned int loc, uint32_t pcr_handle,
+                                 const struct tpm_log_hashes *log_hashes)
+{
+    union tpm2_cmd_rsp cmd_rsp;
+    unsigned int o_size;
+    unsigned int i;
+    uint8_t *p;
+
+    cmd_rsp.extend_c = (struct tpm2_extend_cmd) {
+        .h.tag = cpu_to_be16(TPM_ST_SESSIONS),
+        .h.ordinal = cpu_to_be32(TPM2_PCR_Extend),
+        .pcrHandle = cpu_to_be32(pcr_handle),
+        .sessionHdrSize = cpu_to_be32(sizeof(struct tpm2_session_header)),
+        .pcrSession.handle = cpu_to_be32(TPM_RS_PW),
+        .hashCount = cpu_to_be32(log_hashes->count),
+    };
+
+    p = cmd_rsp.extend_c.hashes;
+    for ( i = 0; i < log_hashes->count; ++i )
+    {
+        const struct tpm_log_hash *hash = &log_hashes->hashes[i];
+
+        if ( p + sizeof(uint16_t) + hash->size > &cmd_rsp.b[sizeof(cmd_rsp)] )
+        {
+            printk(XENLOG_ERR "Hit TPM message size implementation limit: %ld\n",
+                   sizeof(cmd_rsp));
+            return TPM_INTERNAL_ERROR;
+        }
+
+        *(uint16_t *)p = cpu_to_be16(hash->alg);
+        p += sizeof(uint16_t);
+
+        memcpy(p, hash->data, hash->size);
+        p += hash->size;
+    }
+
+    /* Fill in command size (size of the whole buffer). */
+    cmd_rsp.c.paramSize = cpu_to_be32(sizeof(cmd_rsp.extend_c) +
+                                      (p - cmd_rsp.extend_c.hashes));
+
+    o_size = sizeof(cmd_rsp);
+    send_cmd(loc, cmd_rsp.b, be32_to_cpu(cmd_rsp.c.paramSize), &o_size);
+
+    return be32_to_cpu(cmd_rsp.r.returnCode);
+}
+
+static bool tpm2_supports_hash(unsigned int loc,
+                               const struct tpm_log_hash *hash)
+{
+    uint32_t rc;
+    struct tpm_log_hashes hashes = {
+        .count = 1,
+        .hashes[0] = *hash,
+    };
+
+    /*
+     * This is a valid way of checking hash support, using it to not implement
+     * TPM2_GetCapability().
+     */
+    rc = tpm20_pcr_extend(loc, /*pcr_handle=*/TPM_RH_NULL, &hashes);
+
+    return rc == 0;
+}
+
+static uint32_t tpm2_hash_extend(unsigned int loc, const uint8_t *buf,
+                                 unsigned int size, unsigned int pcr,
+                                 const struct tpm_log_hashes *log_hashes)
+{
+    uint32_t rc;
+    unsigned int i;
+    struct tpm_log_hashes supported_hashes = {0};
+
+    request_locality(loc);
+
+    for ( i = 0; i < log_hashes->count; ++i )
+    {
+        const struct tpm_log_hash *hash = &log_hashes->hashes[i];
+        if ( !tpm2_supports_hash(loc, hash) )
+        {
+            printk(XENLOG_WARNING "Skipped hash unsupported by TPM: %d\n",
+                   hash->alg);
+            continue;
+        }
+
+        if ( hash->alg == TPM_ALG_SHA1 )
+        {
+            sha1(hash->data, buf, size);
+        }
+        else if ( hash->alg == TPM_ALG_SHA256 )
+        {
+            sha2_256(hash->data, buf, size);
+        }
+        else
+        {
+            /*
+             * Assuming the caller has initialized the digest with some
+             * pattern.
+             */
+        }
+
+        if ( supported_hashes.count == MAX_TPM_HASH_COUNT )
+        {
+            printk(XENLOG_ERR "Hit hash count implementation limit: %d\n",
+                   MAX_TPM_HASH_COUNT);
+            return TPM_INTERNAL_ERROR;
+        }
+
+        supported_hashes.hashes[supported_hashes.count] = *hash;
+        ++supported_hashes.count;
+    }
+
+    rc = tpm20_pcr_extend(loc, HR_PCR + pcr, &supported_hashes);
+    relinquish_locality(loc);
+
+    return rc;
+}
+
+#endif /* __EARLY_TPM__ */
+
+/************************** end of TPM2.0 specific ****************************/
+
 uint32_t tpm_hash_extend(unsigned int loc, unsigned int pcr, const uint8_t *buf,
                          unsigned int size,
                          const struct tpm_log_hashes *log_hashes)
@@ -402,5 +730,5 @@ uint32_t tpm_hash_extend(unsigned int loc, unsigned int pcr, const uint8_t *buf,
         return tpm12_hash_extend(loc, buf, size, pcr, log_hashes);
     }
 
-    return TPM_INTERNAL_ERROR;
+    return tpm2_hash_extend(loc, buf, size, pcr, log_hashes);
 }

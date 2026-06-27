@@ -57,6 +57,11 @@ bool tpm_is_tpm1(void);
  * The list of hashes must either be empty or contain nothing but SHA1 hash when
  * tpm_is_tpm1() returns true.
  *
+ * When tpm_is_tpm1() returns false, the list of digests can also be used to
+ * determine which hashes to extend.  The only hashes that are guaranteed to be
+ * supported are SHA1 and SHA256, all other digests need to be pre-filled by
+ * the caller with some placeholder value.
+ *
  * Returns:
  *  - TPM error code when < 4096 (0 means success)
  *  - TPM_INTERNAL_ERROR on invalid invocation or a failure to communicate with
