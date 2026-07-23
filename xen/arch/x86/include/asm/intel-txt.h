@@ -273,6 +273,17 @@ struct txt_heap_tpr_req_element {
 } __packed;
 
 /*
+ * TPR register bits.
+ */
+#define TXT_TPR_BASE_RO        (1u << 3)
+#define TXT_TPR_BASE_DISABLE   (1u << 4)
+#define TXT_TPR_ADDR_MASK      (~0ULL << 20)
+#define TXT_TPR_SERIALIZE_STS  (1u << 0)
+#define TXT_TPR_SERIALIZE_CTRL (1u << 1)
+
+#define TXT_TPR_SERIALIZE_TIMEOUT MILLISECS(10)
+
+/*
  * Functions to extract data from the Intel TXT Heap Memory.
  *
  * The layout of the heap is dictated by TXT. It's a set of variable-sized
@@ -589,6 +600,17 @@ void txt_reserve_mem_regions(void);
 
 /* Restores original MTRR values saved by a bootloader before starting DRTM. */
 void txt_restore_mtrrs(bool verbose);
+
+/*
+ * Disables DMA protection set up for a measured launch once it's no longer
+ * necessary.  Must be called only after DMA remapping has been enabled with
+ * covering page tables on all IOMMUs.  No-op on non-TXT boots.
+ */
+#ifdef CONFIG_SLAUNCH
+void txt_disable_dma_protection(void);
+#else
+static inline void txt_disable_dma_protection(void) {}
+#endif
 
 #endif /* !__ASSEMBLER__ */
 
