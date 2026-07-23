@@ -341,14 +341,13 @@ static inline void *txt_init(void)
 }
 
 /*
- * Find the given element in the TXT heap extended data.
+ * Walk a list of extended data elements looking for an element of the given
+ * type.
  */
 static inline struct txt_ext_data_element *
-txt_find_ext_data_element(struct txt_os_sinit_data *os_sinit, uint32_t type)
+txt_find_ext_data_element_in(void *start, uint32_t type)
 {
-    struct txt_ext_data_element *ext_elem;
-
-    ext_elem = (void *)os_sinit + sizeof(struct txt_os_sinit_data);
+    struct txt_ext_data_element *ext_elem = start;
 
     while ( ext_elem->type != TXT_HEAP_EXTDATA_TYPE_END )
     {
@@ -359,6 +358,26 @@ txt_find_ext_data_element(struct txt_os_sinit_data *os_sinit, uint32_t type)
     }
 
     return NULL;
+}
+
+/*
+ * Find the given element in the extended data of the OS-to-SINIT heap table.
+ */
+static inline struct txt_ext_data_element *
+txt_find_os_sinit_ext_data_element(struct txt_os_sinit_data *os_sinit,
+                                   uint32_t type)
+{
+    return txt_find_ext_data_element_in(os_sinit + 1, type);
+}
+
+/*
+ * Find the given element in the extended data of the SINIT-to-MLE heap table.
+ */
+static inline struct txt_ext_data_element *
+txt_find_sinit_mle_ext_data_element(struct txt_sinit_mle_data *sinit_mle,
+                                    uint32_t type)
+{
+    return txt_find_ext_data_element_in(sinit_mle + 1, type);
 }
 
 static inline bool is_in_dma_prot(struct txt_os_sinit_data *os_sinit,
@@ -376,8 +395,10 @@ static inline bool is_in_dma_prot(struct txt_os_sinit_data *os_sinit,
          * txt_verify_dma_protection() has already validated presence and contents
          * of the TPR_REQ element.
          */
-        const struct txt_heap_tpr_req_element *tpr_req = (const struct txt_heap_tpr_req_element *)
-            txt_find_ext_data_element(os_sinit, TXT_HEAP_EXTDATA_TYPE_TPR_REQ)->data;
+        const struct txt_heap_tpr_req_element *tpr_req =
+            (const struct txt_heap_tpr_req_element *)
+            txt_find_os_sinit_ext_data_element(
+                os_sinit, TXT_HEAP_EXTDATA_TYPE_TPR_REQ)->data;
 
         lo_size = tpr_req->ranges[0].size;
         if ( tpr_req->count > 1 )
@@ -435,7 +456,8 @@ static inline void txt_verify_dma_protection(
          * 1- and 2-range configurations with the low range starting at 0.
          */
 
-        tpr_req_data_element = txt_find_ext_data_element(os_sinit, TXT_HEAP_EXTDATA_TYPE_TPR_REQ);
+        tpr_req_data_element = txt_find_os_sinit_ext_data_element(
+            os_sinit, TXT_HEAP_EXTDATA_TYPE_TPR_REQ);
         if ( tpr_req_data_element == NULL )
             txt_reset(SLAUNCH_ERROR_TPR_NOT_FOUND);
         if ( tpr_req_data_element->size < sizeof(struct txt_heap_tpr_req_element) )
