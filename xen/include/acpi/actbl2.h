@@ -66,6 +66,7 @@
 #define ACPI_SIG_DBG2           "DBG2"	/* Debug Port table type 2 */
 #define ACPI_SIG_DBGP           "DBGP"	/* Debug Port table */
 #define ACPI_SIG_DMAR           "DMAR"	/* DMA Remapping table */
+#define ACPI_SIG_DTPR           "DTPR"	/* DMA TXT Protection Ranges table */
 #define ACPI_SIG_HPET           "HPET"	/* High Precision Event Timer table */
 #define ACPI_SIG_IBFT           "IBFT"	/* i_sCSI Boot Firmware Table */
 #define ACPI_SIG_IORT           "IORT"	/* IO Remapping Table */
@@ -436,6 +437,49 @@ struct acpi_dmar_satc {
 	uint8_t flags;
 	uint8_t reserved;
 	uint16_t segment;
+};
+
+/*******************************************************************************
+ *
+ * DTPR - DMA TXT Protection Ranges Table
+ *        Version 1
+ *
+ * Conforms to "Intel Trusted Execution Technology (Intel TXT) DMA Protection
+ * Ranges", Revision 0.73, August 2021
+ *
+ ******************************************************************************/
+
+/*
+ * The table consists of variable-sized parts laid out as follows:
+ *
+ *   struct acpi_table_dtpr
+ *   ins_cnt instance entries, each of them being:
+ *       struct acpi_tpr_instance
+ *       tpr_cnt struct acpi_tpr_array entries with physical addresses of
+ *           TPRn_BASE/TPRn_LIMIT register pairs
+ *   struct acpi_tpr_aux_sr
+ *   srl_cnt struct acpi_tpr_array entries with physical addresses of
+ *       SERIALIZE_REQUEST registers
+ */
+
+struct acpi_table_dtpr {
+	struct acpi_table_header header;	/* Common ACPI table header */
+	u32 flags;
+	u32 ins_cnt;		/* Number of hardware instances */
+};
+
+struct acpi_tpr_instance {
+	u32 flags;
+	u32 tpr_cnt;		/* Number of TPR register pairs */
+};
+
+/* A single entry of the table's physical address arrays */
+struct acpi_tpr_array {
+	u64 base;
+};
+
+struct acpi_tpr_aux_sr {
+	u32 srl_cnt;		/* Number of serialization registers */
 };
 
 /*******************************************************************************

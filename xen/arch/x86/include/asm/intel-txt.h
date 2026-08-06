@@ -273,6 +273,17 @@ struct txt_heap_tpr_req_element {
 } __packed;
 
 /*
+ * TPR register bits.
+ */
+#define TXT_TPR_BASE_RO        (1u << 3)
+#define TXT_TPR_BASE_DISABLE   (1u << 4)
+#define TXT_TPR_ADDR_MASK      (~0ULL << 20)
+#define TXT_TPR_SERIALIZE_STS  (1u << 0)
+#define TXT_TPR_SERIALIZE_CTRL (1u << 1)
+
+#define TXT_TPR_SERIALIZE_TIMEOUT MILLISECS(10)
+
+/*
  * Functions to extract data from the Intel TXT Heap Memory.
  *
  * The layout of the heap is dictated by TXT. It's a set of variable-sized
@@ -341,14 +352,13 @@ static inline void *txt_init(void)
 }
 
 /*
- * Find the given element in the TXT heap extended data.
+ * Walk a list of extended data elements looking for an element of the given
+ * type.
  */
 static inline struct txt_ext_data_element *
-txt_find_ext_data_element(struct txt_os_sinit_data *os_sinit, uint32_t type)
+txt_find_ext_data_element_in(void *start, uint32_t type)
 {
-    struct txt_ext_data_element *ext_elem;
-
-    ext_elem = (void *)os_sinit + sizeof(struct txt_os_sinit_data);
+    struct txt_ext_data_element *ext_elem = start;
 
     while ( ext_elem->type != TXT_HEAP_EXTDATA_TYPE_END )
     {
@@ -359,6 +369,26 @@ txt_find_ext_data_element(struct txt_os_sinit_data *os_sinit, uint32_t type)
     }
 
     return NULL;
+}
+
+/*
+ * Find the given element in the extended data of the OS-to-SINIT heap table.
+ */
+static inline struct txt_ext_data_element *
+txt_find_os_sinit_ext_data_element(struct txt_os_sinit_data *os_sinit,
+                                   uint32_t type)
+{
+    return txt_find_ext_data_element_in(os_sinit + 1, type);
+}
+
+/*
+ * Find the given element in the extended data of the SINIT-to-MLE heap table.
+ */
+static inline struct txt_ext_data_element *
+txt_find_sinit_mle_ext_data_element(struct txt_sinit_mle_data *sinit_mle,
+                                    uint32_t type)
+{
+    return txt_find_ext_data_element_in(sinit_mle + 1, type);
 }
 
 static inline bool is_in_dma_prot(struct txt_os_sinit_data *os_sinit,
@@ -376,8 +406,10 @@ static inline bool is_in_dma_prot(struct txt_os_sinit_data *os_sinit,
          * txt_verify_dma_protection() has already validated presence and contents
          * of the TPR_REQ element.
          */
-        const struct txt_heap_tpr_req_element *tpr_req = (const struct txt_heap_tpr_req_element *)
-            txt_find_ext_data_element(os_sinit, TXT_HEAP_EXTDATA_TYPE_TPR_REQ)->data;
+        const struct txt_heap_tpr_req_element *tpr_req =
+            (const struct txt_heap_tpr_req_element *)
+            txt_find_os_sinit_ext_data_element(
+                os_sinit, TXT_HEAP_EXTDATA_TYPE_TPR_REQ)->data;
 
         lo_size = tpr_req->ranges[0].size;
         if ( tpr_req->count > 1 )
@@ -435,7 +467,8 @@ static inline void txt_verify_dma_protection(
          * 1- and 2-range configurations with the low range starting at 0.
          */
 
-        tpr_req_data_element = txt_find_ext_data_element(os_sinit, TXT_HEAP_EXTDATA_TYPE_TPR_REQ);
+        tpr_req_data_element = txt_find_os_sinit_ext_data_element(
+            os_sinit, TXT_HEAP_EXTDATA_TYPE_TPR_REQ);
         if ( tpr_req_data_element == NULL )
             txt_reset(SLAUNCH_ERROR_TPR_NOT_FOUND);
         if ( tpr_req_data_element->size < sizeof(struct txt_heap_tpr_req_element) )
@@ -567,6 +600,17 @@ void txt_reserve_mem_regions(void);
 
 /* Restores original MTRR values saved by a bootloader before starting DRTM. */
 void txt_restore_mtrrs(bool verbose);
+
+/*
+ * Disables DMA protection set up for a measured launch once it's no longer
+ * necessary.  Must be called only after DMA remapping has been enabled with
+ * covering page tables on all IOMMUs.  No-op on non-TXT boots.
+ */
+#ifdef CONFIG_SLAUNCH
+void txt_disable_dma_protection(void);
+#else
+static inline void txt_disable_dma_protection(void) {}
+#endif
 
 #endif /* !__ASSEMBLER__ */
 
