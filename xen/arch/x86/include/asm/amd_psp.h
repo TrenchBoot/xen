@@ -7,7 +7,7 @@
  * The PSP DRTM mailbox. GRUB uses it to set up a Trusted Memory Region over
  * the memory it launches into, SKL uses it to extend the OS loader digest and
  * to issue DRTM_CMD_LAUNCH, and Xen uses it to release that TMR once its own
- * IOMMU is programmed.
+ * IOMMU is programmed and to lock the DRTM TPM localities on the way out.
  *
  * C2PMSG_72 carries a command and returns a status in one 32-bit register:
  *
@@ -42,10 +42,11 @@
 #define DRTM_GET_IVRS_TABLE_FAILED      0x0010
 
 /*
- * The command Xen issues. The bootloader and SKL drive the rest of the
+ * The commands Xen issues. The bootloader and SKL drive the rest of the
  * interface, see grub-core/loader/slaunch/psp.c and SKL's psp.c.
  */
 #define DRTM_CMD_TMR_RELEASE            0x3
+#define DRTM_CMD_TPM_LOCALITY_ACCESS    0x8
 
 /* GRUB sets up one TMR, at index 0. */
 #define DRTM_TMR_INDEX_0                0
@@ -65,5 +66,8 @@ bool slaunch_psp_active(void);
 
 /* Release TMR 0, dropping the DMA protection GRUB set up over Xen. */
 bool slaunch_psp_tmr_release(void);
+
+/* Lock the DRTM TPM localities and drop the mapping. */
+void slaunch_psp_finalize(void);
 
 #endif /* _ASM_X86_AMD_PSP_H_ */

@@ -21,6 +21,7 @@
 #include <xen/percpu.h>
 #include <xen/types.h>
 
+#include <asm/amd_psp.h>
 #include <asm/fixmap.h>
 #include <asm/hpet.h>
 #include <asm/idt.h>
@@ -154,6 +155,9 @@ void machine_kexec(struct kexec_image *image)
 {
     int i;
     unsigned long reloc_flags = 0;
+
+    /* Close the DRTM localities before the next kernel gets to see the TPM. */
+    slaunch_psp_finalize();
 
     /* We are about to permenantly jump out of the Xen context into the kexec
      * purgatory code.  We really dont want to be still servicing interupts.

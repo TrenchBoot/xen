@@ -24,6 +24,7 @@
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/mpspec.h>
+#include <asm/amd_psp.h>
 #include <asm/tboot.h>
 #include <asm/apic.h>
 #include <asm/guest.h>
@@ -133,6 +134,9 @@ void machine_halt(void)
 {
     watchdog_disable();
     console_start_sync();
+
+    /* Close the DRTM localities before firmware runs again. */
+    slaunch_psp_finalize();
 
     if ( system_state >= SYS_STATE_smp_boot )
     {
@@ -560,6 +564,9 @@ void machine_restart(unsigned int delay_millisecs)
     }
 
     mdelay(delay_millisecs);
+
+    /* Close the DRTM localities before firmware runs again. */
+    slaunch_psp_finalize();
 
     if ( tboot_in_measured_env() )
     {

@@ -6,6 +6,9 @@
  * TMR is the AMD analogue of the Intel PMRs, so it stays until Xen has its own
  * DMA protection: the release is issued from iov_detect(), after the IOMMUs are
  * enabled and before setup_IO_APIC() runs check_timer().
+ *
+ * On the way out the DRTM TPM localities are locked, so that a kernel started
+ * by kexec, or firmware after a reboot, cannot reach locality 2.
  */
 
 #include <xen/cache.h>
@@ -269,7 +272,7 @@ void __init slaunch_psp_setup(void)
     /*
      * Only C2PMSG_72 is mapped. The argument registers C2PMSG_93 through
      * C2PMSG_95 belong to the commands the bootloader and SKL issue, and
-     * the release takes no argument.
+     * neither of Xen's two commands takes an argument.
      */
     c2pmsg_72 = ioremap(bar + PSP_C2PMSG_72, sizeof(uint32_t));
     if ( c2pmsg_72 == NULL )
@@ -306,4 +309,17 @@ bool slaunch_psp_tmr_release(void)
     printk("SLAUNCH: released TMR 0, DMA protection is now the IOMMU's\n");
 
     return true;
+}
+
+void slaunch_psp_finalize(void)
+{
+    if ( !psp_active || c2pmsg_72 == NULL )
+        return;
+
+    if ( !psp_command(DRTM_CMD_TPM_LOCALITY_ACCESS << DRTM_MBOX_CMD_SHIFT,
+                      "DRTM_CMD_TPM_LOCALITY_ACCESS") )
+        printk(XENLOG_ERR "SLAUNCH: DRTM TPM localities are still open\n");
+
+    iounmap(c2pmsg_72);
+    c2pmsg_72 = NULL;
 }
