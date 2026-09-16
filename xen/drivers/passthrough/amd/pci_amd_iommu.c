@@ -21,6 +21,8 @@
 #include <xen/softirq.h>
 
 #include <asm/acpi.h>
+#include <asm/amd_psp.h>
+#include <asm/slaunch.h>
 
 #include "iommu.h"
 #include "../ats.h"
@@ -322,6 +324,24 @@ static int __init cf_check iov_detect(void)
     }
 
     init_done = 1;
+
+    /*
+     * Every IOMMU is now enabled against a programmed device table, so the DMA
+     * protection the PSP holds over the launched image can be handed over.
+     *
+     * This is the first point past early_time_init() at which every IOMMU is
+     * up, which matters because the mailbox handshake waits in milliseconds and
+     * udelay() needs a calibrated TSC to wait at all. It is also still ahead of
+     * setup_IO_APIC(), so check_timer() runs with the TMR gone and interrupts
+     * reaching the CPU.
+     */
+    if ( slaunch_active )
+    {
+        slaunch_psp_setup();
+
+        if ( slaunch_psp_active() && !slaunch_psp_tmr_release() )
+            panic("SLAUNCH: the PSP kept its TMR, interrupt delivery is dead\n");
+    }
 
     if ( !amd_iommu_perdev_intremap )
         printk(XENLOG_WARNING "AMD-Vi: Using global interrupt remap table is not recommended (see XSA-36)!\n");
