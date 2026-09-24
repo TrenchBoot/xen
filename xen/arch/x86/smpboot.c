@@ -463,7 +463,7 @@ static int wake_ap_in_txt(int phys_apicid)
             txt_start(__va(txt_read(TXTCR_HEAP_BASE)), TXT_SINIT2MLE);
         uint32_t *wakeup_addr = __va(sinit_mle->rlp_wakeup_addr);
 
-        join[0] = trampoline_gdt[0] >> 32;                   /* GDT limit */
+        join[0] = (trampoline_gdt[0] >> 16) & 0xffff;        /* GDT limit */
         join[1] = bootsym_phys(trampoline_gdt);              /* GDT base */
         join[2] = (trampoline_gdt_txt - trampoline_gdt) * 8; /* CS selector */
                                                              /* DS = CS + 8 */
