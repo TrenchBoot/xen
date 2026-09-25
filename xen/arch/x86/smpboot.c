@@ -29,6 +29,7 @@
 #include <asm/div64.h>
 #include <asm/flushtlb.h>
 #include <asm/guest.h>
+#include <asm/hvm/hvm.h>
 #include <asm/idt.h>
 #include <asm/intel-txt.h>
 #include <asm/io_apic.h>
@@ -445,6 +446,9 @@ void asmlinkage start_secondary(void)
     startup_cpu_idle_loop();
 }
 
+/* EAX value for GETSEC[WAKEUP]. */
+#define GETSEC_WAKEUP 8
+
 static int wake_ap_in_txt(int phys_apicid)
 {
     static uint32_t join[4];
@@ -453,15 +457,23 @@ static int wake_ap_in_txt(int phys_apicid)
     smp_mb();
 
     /*
-     * All APs are released at the same time on the first write to wakeup
-     * address, which happens on the first invocation.  Because the write isn't
-     * handled synchronously, the JOIN structure must outlive this function.
+     * All APs are released at the same time on the first wakeup, which happens
+     * on the first invocation.  Because the wakeup isn't handled synchronously,
+     * the JOIN structure must outlive this function.
      */
-    if (join[0] == 0)
+    if ( join[0] == 0 )
     {
-        const struct txt_sinit_mle_data *sinit_mle =
-            txt_start(__va(txt_read(TXTCR_HEAP_BASE)), TXT_SINIT2MLE);
-        uint32_t *wakeup_addr = __va(sinit_mle->rlp_wakeup_addr);
+        void *txt_heap = __va(txt_read(TXTCR_HEAP_BASE));
+        const struct txt_os_sinit_data *os_sinit =
+            txt_start(txt_heap, TXT_OS2SINIT);
+        uint32_t caps = os_sinit->capabilities;
+
+        if ( !(caps & (TXT_CAPS_RLP_WAKE_MONITOR |
+                       TXT_CAPS_RLP_WAKE_GETSEC)) )
+        {
+            printk(XENLOG_ERR "SLAUNCH: no RLP wakeup mechanism negotiated\n");
+            return 1;
+        }
 
         join[0] = (trampoline_gdt[0] >> 16) & 0xffff;        /* GDT limit */
         join[1] = bootsym_phys(trampoline_gdt);              /* GDT base */
@@ -470,7 +482,45 @@ static int wake_ap_in_txt(int phys_apicid)
         join[3] = bootsym_phys(txt_ap_entry);                /* EIP */
 
         txt_write(TXTCR_MLE_JOIN, __pa(join));
-        *wakeup_addr = 1;
+
+        /* The bootloader negotiates the wakeup mechanism with SINIT. */
+        if ( caps & TXT_CAPS_RLP_WAKE_MONITOR )
+        {
+            const struct txt_sinit_mle_data *sinit_mle =
+                txt_start(txt_heap, TXT_SINIT2MLE);
+            uint32_t *wakeup_addr = __va(sinit_mle->rlp_wakeup_addr);
+
+            *wakeup_addr = 1;
+        }
+        else
+        {
+            unsigned long cr4_val, flags;
+            bool restart_vmx = hvm_enabled && using_vmx();
+
+            /*
+             * HVM is initialized before SMP bringup.  GETSEC[WAKEUP] cannot
+             * execute in VMX operation, so temporarily leave VMX and restore
+             * it afterwards.  Do not service interrupts outside VMX.
+             */
+            local_irq_save(flags);
+            if ( restart_vmx )
+                hvm_cpu_down();
+
+            cr4_val = read_cr4();
+            if ( !(cr4_val & X86_CR4_SMXE) )
+                write_cr4(cr4_val | X86_CR4_SMXE);
+
+            /* Keep the JOIN structure visible before releasing the APs. */
+            asm volatile ( "getsec" :: "a" (GETSEC_WAKEUP) : "memory" );
+
+            if ( !(cr4_val & X86_CR4_SMXE) )
+                write_cr4(cr4_val);
+
+            if ( restart_vmx && hvm_cpu_up() )
+                panic("SLAUNCH: failed to restore BSP VMX after wakeup\n");
+
+            local_irq_restore(flags);
+        }
     }
 
     return 0;

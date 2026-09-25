@@ -69,6 +69,10 @@
 #define SLAUNCH_ERROR_TPR_UNSUPPORTED   0xc000800DU
 #define SLAUNCH_ERROR_TPR_NOT_FOUND     0xc000800EU
 
+/* OS-SINIT capabilities: RLP wakeup mechanisms (bits 0 and 1). */
+#define TXT_CAPS_RLP_WAKE_GETSEC        (1u << 0)
+#define TXT_CAPS_RLP_WAKE_MONITOR       (1u << 1)
+
 /* SINIT/MLE capability bit for TPR (TXT Protected Range) DMA protection. */
 #define TXT_SINIT_MLE_CAP_TPR_SUPPORT   14
 
