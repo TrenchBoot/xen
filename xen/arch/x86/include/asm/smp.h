@@ -79,6 +79,7 @@ extern unsigned int disabled_cpus;
 extern bool unaccounted_cpus;
 
 void *cpu_alloc_stack(unsigned int cpu);
+void txt_wake_aps(void);
 
 #endif /* !__ASSEMBLER__ */
 

@@ -243,11 +243,11 @@ static void smp_callin(void)
 }
 
 /*
- * ACPI ID of the AP to be released by txt_ap_gate() next.  Gets set in
- * wake_ap_in_txt() after which do_boot_cpu() waits for the AP to initialize
- * itself.
+ * APIC ID of the AP to be released by txt_ap_gate() next.  -1 keeps all
+ * early-woken APs parked until wake_ap_in_txt() selects each one.
  */
-static int txt_booting_apicid;
+static int txt_booting_apicid = -1;
+static bool txt_aps_woken;
 
 void asmlinkage txt_ap_gate(int apicid)
 {
@@ -449,81 +449,69 @@ void asmlinkage start_secondary(void)
 /* EAX value for GETSEC[WAKEUP]. */
 #define GETSEC_WAKEUP 8
 
+void __init txt_wake_aps(void)
+{
+    static uint32_t join[4]; /* APs can still be reading this after return. */
+    void *txt_heap = __va(txt_read(TXTCR_HEAP_BASE));
+    const struct txt_os_sinit_data *os_sinit =
+        txt_start(txt_heap, TXT_OS2SINIT);
+    uint32_t caps = os_sinit->capabilities;
+
+    if ( !(caps & (TXT_CAPS_RLP_WAKE_MONITOR | TXT_CAPS_RLP_WAKE_GETSEC)) )
+    {
+        printk(XENLOG_ERR "SLAUNCH: no RLP wakeup mechanism negotiated\n");
+        return;
+    }
+
+    join[0] = (trampoline_gdt[0] >> 16) & 0xffff;        /* GDT limit */
+    join[1] = bootsym_phys(trampoline_gdt);              /* GDT base */
+    join[2] = (trampoline_gdt_txt - trampoline_gdt) * 8; /* CS selector */
+                                                         /* DS = CS + 8 */
+    join[3] = bootsym_phys(txt_ap_entry);                /* EIP */
+
+    txt_write(TXTCR_MLE_JOIN, __pa(join));
+
+    printk("SLAUNCH: waking RLPs before VMXON via %s\n",
+           caps & TXT_CAPS_RLP_WAKE_MONITOR ? "MONITOR" : "GETSEC[WAKEUP]");
+
+    /* The bootloader negotiates the wakeup mechanism with SINIT. */
+    if ( caps & TXT_CAPS_RLP_WAKE_MONITOR )
+    {
+        const struct txt_sinit_mle_data *sinit_mle =
+            txt_start(txt_heap, TXT_SINIT2MLE);
+        uint32_t *wakeup_addr = __va(sinit_mle->rlp_wakeup_addr);
+
+        *wakeup_addr = 1;
+    }
+    else
+    {
+        unsigned long cr4_val, flags;
+
+        /* GETSEC[WAKEUP] must run before presmp_initcalls() enters VMX. */
+        local_irq_save(flags);
+        cr4_val = read_cr4();
+        if ( !(cr4_val & X86_CR4_SMXE) )
+            write_cr4(cr4_val | X86_CR4_SMXE);
+
+        /* Keep the JOIN structure visible before releasing the APs. */
+        asm volatile ( "getsec" :: "a" (GETSEC_WAKEUP) : "memory" );
+
+        if ( !(cr4_val & X86_CR4_SMXE) )
+            write_cr4(cr4_val);
+        local_irq_restore(flags);
+    }
+
+    /* All APs stay at txt_ap_gate() until individually released. */
+    txt_aps_woken = true;
+    printk("SLAUNCH: RLP wakeup issued\n");
+}
+
 static int wake_ap_in_txt(int phys_apicid)
 {
-    static uint32_t join[4];
-
     txt_booting_apicid = phys_apicid;
     smp_mb();
 
-    /*
-     * All APs are released at the same time on the first wakeup, which happens
-     * on the first invocation.  Because the wakeup isn't handled synchronously,
-     * the JOIN structure must outlive this function.
-     */
-    if ( join[0] == 0 )
-    {
-        void *txt_heap = __va(txt_read(TXTCR_HEAP_BASE));
-        const struct txt_os_sinit_data *os_sinit =
-            txt_start(txt_heap, TXT_OS2SINIT);
-        uint32_t caps = os_sinit->capabilities;
-
-        if ( !(caps & (TXT_CAPS_RLP_WAKE_MONITOR |
-                       TXT_CAPS_RLP_WAKE_GETSEC)) )
-        {
-            printk(XENLOG_ERR "SLAUNCH: no RLP wakeup mechanism negotiated\n");
-            return 1;
-        }
-
-        join[0] = (trampoline_gdt[0] >> 16) & 0xffff;        /* GDT limit */
-        join[1] = bootsym_phys(trampoline_gdt);              /* GDT base */
-        join[2] = (trampoline_gdt_txt - trampoline_gdt) * 8; /* CS selector */
-                                                             /* DS = CS + 8 */
-        join[3] = bootsym_phys(txt_ap_entry);                /* EIP */
-
-        txt_write(TXTCR_MLE_JOIN, __pa(join));
-
-        /* The bootloader negotiates the wakeup mechanism with SINIT. */
-        if ( caps & TXT_CAPS_RLP_WAKE_MONITOR )
-        {
-            const struct txt_sinit_mle_data *sinit_mle =
-                txt_start(txt_heap, TXT_SINIT2MLE);
-            uint32_t *wakeup_addr = __va(sinit_mle->rlp_wakeup_addr);
-
-            *wakeup_addr = 1;
-        }
-        else
-        {
-            unsigned long cr4_val, flags;
-            bool restart_vmx = hvm_enabled && using_vmx();
-
-            /*
-             * HVM is initialized before SMP bringup.  GETSEC[WAKEUP] cannot
-             * execute in VMX operation, so temporarily leave VMX and restore
-             * it afterwards.  Do not service interrupts outside VMX.
-             */
-            local_irq_save(flags);
-            if ( restart_vmx )
-                hvm_cpu_down();
-
-            cr4_val = read_cr4();
-            if ( !(cr4_val & X86_CR4_SMXE) )
-                write_cr4(cr4_val | X86_CR4_SMXE);
-
-            /* Keep the JOIN structure visible before releasing the APs. */
-            asm volatile ( "getsec" :: "a" (GETSEC_WAKEUP) : "memory" );
-
-            if ( !(cr4_val & X86_CR4_SMXE) )
-                write_cr4(cr4_val);
-
-            if ( restart_vmx && hvm_cpu_up() )
-                panic("SLAUNCH: failed to restore BSP VMX after wakeup\n");
-
-            local_irq_restore(flags);
-        }
-    }
-
-    return 0;
+    return !txt_aps_woken;
 }
 
 static int wakeup_secondary_cpu(int phys_apicid, unsigned long start_eip)

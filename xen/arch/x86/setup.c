@@ -1129,6 +1129,25 @@ static struct domain *__init create_dom0(struct boot_info *bi)
     return d;
 }
 
+static void __init prepare_ap_stacks(bool early_txt_wakeup)
+{
+    unsigned int cpu;
+
+    for_each_present_cpu ( cpu )
+    {
+        /* Set up cpu_to_node[] and its reverse map before stack allocation. */
+        srat_detect_node(cpu);
+        numa_add_cpu(cpu);
+
+        if ( stack_base[cpu] == NULL )
+            stack_base[cpu] = cpu_alloc_stack(cpu);
+
+        /* An AP without a stack would halt before reaching the TXT gate. */
+        if ( early_txt_wakeup && !stack_base[cpu] )
+            panic("SLAUNCH: no stack for CPU%u before RLP wakeup\n", cpu);
+    }
+}
+
 void asmlinkage __init noreturn __start_xen(void)
 {
     const char *memmap_type = NULL;
@@ -2145,6 +2164,17 @@ void asmlinkage __init noreturn __start_xen(void)
 
     system_state = SYS_STATE_smp_boot;
 
+    /*
+     * TXT releases all APs at once.  Give each AP a stack before waking it,
+     * then leave them at txt_ap_gate() while presmp_initcalls() enables VMX
+     * on the BSP.  GETSEC[WAKEUP] cannot run after VMXON.
+     */
+    if ( !pv_shim && ap_boot_method == AP_BOOT_TXT )
+    {
+        prepare_ap_stacks(true);
+        txt_wake_aps();
+    }
+
     do_presmp_initcalls();
 
     boot_apply_alt_calls();
@@ -2156,17 +2186,9 @@ void asmlinkage __init noreturn __start_xen(void)
      */
     if ( !pv_shim )
     {
-        /* Separate loop to make parallel AP bringup possible. */
-        for_each_present_cpu ( i )
-        {
-            /* Set up cpu_to_node[]. */
-            srat_detect_node(i);
-            /* Set up node_to_cpumask based on cpu_to_node[]. */
-            numa_add_cpu(i);
-
-            if ( stack_base[i] == NULL )
-                stack_base[i] = cpu_alloc_stack(i);
-        }
+        /* Separate preparation from bringup for parallel AP startup. */
+        if ( ap_boot_method != AP_BOOT_TXT )
+            prepare_ap_stacks(false);
 
         for_each_present_cpu ( i )
         {
