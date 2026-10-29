@@ -550,6 +550,28 @@ static uint32_t tpm12_hash_extend(unsigned int loc, const uint8_t *buf,
 
 #ifdef __EARLY_TPM__
 
+/* Digest size of a TPM2 hash algorithm, 0 for an unknown one. */
+static unsigned int tpm2_digest_size(uint16_t alg)
+{
+    switch ( alg )
+    {
+    case TPM_ALG_SHA1:
+        return SHA1_DIGEST_SIZE;
+    case TPM_ALG_SHA256:
+    case TPM_ALG_SM3_256:
+    case TPM_ALG_SHA3_256:
+        return SHA2_256_DIGEST_SIZE;
+    case TPM_ALG_SHA384:
+    case TPM_ALG_SHA3_384:
+        return 48;
+    case TPM_ALG_SHA512:
+    case TPM_ALG_SHA3_512:
+        return 64;
+    default:
+        return 0;
+    }
+}
+
 union tpm2_cmd_rsp {
     uint8_t b[sizeof(struct tpm2_sequence_update_cmd) + MAX_HASH_BLOCK];
     struct tpm_cmd_hdr c;
@@ -664,10 +686,15 @@ static uint32_t tpm2_hash_extend(unsigned int loc, const uint8_t *buf,
         goto error;
     }
 
+    /*
+     * The TPM answers with a digest for every hash algorithm it implements,
+     * in its own order, including algorithms whose bank is not allocated
+     * or not in the log. Skip the digests the log does not list.
+     */
     p = cmd_rsp.finish_r.hashes;
     for ( i = 0; i < be32_to_cpu(cmd_rsp.finish_r.hashCount); ++i )
     {
-        unsigned int j;
+        unsigned int j, hash_size;
         uint16_t hash_type;
 
         if ( p + sizeof(uint16_t) > cmd_rsp.b + o_size )
@@ -694,9 +721,19 @@ static uint32_t tpm2_hash_extend(unsigned int loc, const uint8_t *buf,
             }
         }
 
-        if ( j == log_hashes->count )
+        if ( j < log_hashes->count )
+            continue;
+
+        hash_size = tpm2_digest_size(hash_type);
+        if ( !hash_size )
             /* Can't continue parsing without knowing hash size. */
             break;
+        if ( p + hash_size > cmd_rsp.b + o_size )
+        {
+            rc = TPM_INTERNAL_ERROR;
+            goto error;
+        }
+        p += hash_size;
     }
 
     rc = 0;

@@ -28,6 +28,14 @@
 #define TPM_ST_NO_SESSIONS  0x8001
 #define TPM_ST_SESSIONS     0x8002
 
+/* TPM2 hash algorithm IDs from the TCG Algorithm Registry. */
+#define TPM_ALG_SHA384    0x000c
+#define TPM_ALG_SHA512    0x000d
+#define TPM_ALG_SM3_256   0x0012
+#define TPM_ALG_SHA3_256  0x0027
+#define TPM_ALG_SHA3_384  0x0028
+#define TPM_ALG_SHA3_512  0x0029
+
 #define TPM2_PCR_Extend                 0x00000182
 #define TPM2_PCR_HashSequenceStart      0x00000186
 #define TPM2_PCR_SequenceUpdate         0x0000015C
