@@ -33,6 +33,7 @@
 #include <xen/keyhandler.h>
 
 #include <asm/apic.h>
+#include <asm/intel-txt.h>
 #include <asm/io_apic.h>
 #include <asm/msi.h>
 #include <asm/nops.h>
@@ -1455,6 +1456,8 @@ static void __hwdom_init cf_check intel_iommu_hwdom_init(struct domain *d)
             BUG();
         iommu_enable_translation(drhd);
     }
+
+    txt_disable_dma_protection();
 }
 
 static int ats_device(const struct pci_dev *pdev,
